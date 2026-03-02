@@ -1,24 +1,34 @@
-import { SidebarLayout } from "@/components/SidebarLayout";
+import { redirect } from "next/navigation";
+import { getServerSession } from "@/lib/auth/serverSession";
+import { AdminLayoutClient } from "./AdminLayoutClient";
 
-const adminNav = [
-  { href: "/admin", label: "Dashboard" },
-  { href: "/admin/properties", label: "Properties" },
-  { href: "/admin/tenancies", label: "Tenancies" },
-  { href: "/admin/tickets", label: "Tickets" },
-  { href: "/admin/applicants", label: "Applicants" },
-  { href: "/admin/offers", label: "Offers" },
-  { href: "/admin/landlords", label: "Landlords" },
-  { href: "/admin/tenants", label: "Tenants" },
-  { href: "/admin/leads", label: "Leads" },
-  { href: "/admin/settings", label: "Settings" },
-];
+const ADMIN_ALLOWED_ROLES = ["superAdmin", "admin", "agent"] as const;
 
-export default function AdminLayout({
+export default async function AdminLayout({
   children,
 }: { children: React.ReactNode }) {
-  return (
-    <SidebarLayout title="Admin CRM" navItems={adminNav}>
-      {children}
-    </SidebarLayout>
-  );
+  const session = await getServerSession();
+
+  if (!session) {
+    if (process.env.NODE_ENV !== "production") {
+      console.info("[Role Debug] admin layout: no session -> redirect to sign-in");
+    }
+    redirect("/auth/sign-in");
+  }
+
+  if (session.status !== "active") {
+    if (process.env.NODE_ENV !== "production") {
+      console.info("[Role Debug] admin layout: status not active -> redirect to disabled");
+    }
+    redirect("/auth/disabled");
+  }
+
+  if (!ADMIN_ALLOWED_ROLES.includes(session.role as (typeof ADMIN_ALLOWED_ROLES)[number])) {
+    if (process.env.NODE_ENV !== "production") {
+      console.info("[Role Debug] admin layout: role", session.role, "-> redirect to landlord");
+    }
+    redirect("/landlord");
+  }
+
+  return <AdminLayoutClient>{children}</AdminLayoutClient>;
 }

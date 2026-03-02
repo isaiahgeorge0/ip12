@@ -1,7 +1,168 @@
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userExists() {
+      return isSignedIn() && userDoc() != null;
+    }
+
+    function isActive() {
+      return userExists() && userDoc().data.get('status', '') == 'active';
+    }
+
+    function userAgencyId() {
+      return userDoc().data.get('agencyId', null);
+    }
+
+    function inAgency(agencyId) {
+      return userExists() && userAgencyId() == agencyId;
+    }
+
+    function hasPerm(perm) {
+      return userExists() && perm in userDoc().data.get('permissions', []);
+    }
+
+    function isRole(role) {
+      return userExists() && userDoc().data.get('role', '') == role;
+    }
+
+    function agencyBase(agencyId) {
+      return isSignedIn() && userExists() && isActive() && inAgency(agencyId);
+    }
+
+    function canReadAgency(agencyId, perm) {
+      return agencyBase(agencyId) && (hasPerm(perm) || isRole('superAdmin'));
+    }
+
+    function canWriteAgency(agencyId, perm) {
+      return agencyBase(agencyId) && (hasPerm(perm) || isRole('superAdmin'));
+    }
+
+    function isSafeUserUpdate() {
+      return request.resource.data.get('agencyId', null) == resource.data.get('agencyId', null)
+        && request.resource.data.get('role', null) == resource.data.get('role', null)
+        && request.resource.data.get('permissions', null) == resource.data.get('permissions', null)
+        && request.resource.data.get('status', null) == resource.data.get('status', null)
+        && request.resource.data.get('uid', null) == resource.data.get('uid', null)
+        && request.resource.data.get('email', null) == resource.data.get('email', null)
+        && request.resource.data.get('createdAt', null) == resource.data.get('createdAt', null);
+    }
+
+    function onlyKeys(data, allowedKeys) {
+      return data.keys().hasOnly(allowedKeys);
+    }
+
+    function ticketAllowedKeys() {
+      return set('title', 'propertyRef', 'description', 'priority', 'status', 'createdAt', 'updatedAt', 'createdByUid');
+    }
+
+    function validTicketPriority(p) {
+      return p in set('Low', 'Medium', 'High');
+    }
+
+    function validTicketStatus(s) {
+      return s in set('Open', 'In progress', 'Resolved');
+    }
+
+    function ticketCreateValid(data) {
+      return onlyKeys(data, ticketAllowedKeys())
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.propertyRef is string && data.propertyRef.size() >= 1 && data.propertyRef.size() <= 120
+        && data.description is string && data.description.size() >= 1 && data.description.size() <= 2000
+        && data.priority is string && validTicketPriority(data.priority)
+        && data.status is string && validTicketStatus(data.status)
+        && data.createdByUid is string && data.createdByUid == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function ticketUpdateValid(data, existing) {
+      return onlyKeys(data, ticketAllowedKeys())
+        && data.createdAt == existing.createdAt
+        && data.createdByUid == existing.createdByUid
+        && data.updatedAt is timestamp
+        && data.updatedAt >= existing.updatedAt
+        && data.priority is string && validTicketPriority(data.priority)
+        && data.status is string && validTicketStatus(data.status)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.propertyRef is string && data.propertyRef.size() >= 1 && data.propertyRef.size() <= 120
+        && data.description is string && data.description.size() >= 1 && data.description.size() <= 2000;
+    }
+
+    match /users/{userId} {
+      allow read: if (request.auth != null && request.auth.uid == userId)
+        || (userExists() && isRole('superAdmin'));
+      allow create, delete: if userExists() && isRole('superAdmin');
+      allow update: if (request.auth != null && request.auth.uid == userId && isSafeUserUpdate())
+        || (userExists() && isRole('superAdmin'));
+    }
+
+    match /agencies/{agencyId}/tickets/{ticketId} {
+      allow read: if canReadAgency(agencyId, 'tickets.read');
+      allow create: if canWriteAgency(agencyId, 'tickets.write')
+        && ticketCreateValid(request.resource.data);
+      allow update: if canWriteAgency(agencyId, 'tickets.write')
+        && ticketUpdateValid(request.resource.data, resource.data);
+      allow delete: if canWriteAgency(agencyId, 'tickets.write');
+    }
+
+    match /agencies/{agencyId}/properties/{propertyId} {
+      allow read: if canReadAgency(agencyId, 'properties.read');
+      allow create, update, delete: if canWriteAgency(agencyId, 'properties.write');
+    }
+
+    match /agencies/{agencyId}/tenancies/{docId} {
+      allow read: if canReadAgency(agencyId, 'tenancies.read');
+      allow create, update, delete: if canWriteAgency(agencyId, 'tenancies.write');
+    }
+
+    match /agencies/{agencyId}/applications/{docId} {
+      allow read: if canReadAgency(agencyId, 'applications.read');
+      allow create, update, delete: if canWriteAgency(agencyId, 'applications.write');
+    }
+
+    match /agencies/{agencyId}/landlords/{docId} {
+      allow read: if canReadAgency(agencyId, 'landlords.read');
+      allow create, update, delete: if canWriteAgency(agencyId, 'landlords.write');
+    }
+
+    match /agencies/{agencyId}/tenants/{docId} {
+      allow read: if canReadAgency(agencyId, 'tenants.read');
+      allow create, update, delete: if canWriteAgency(agencyId, 'tenants.write');
+    }
+
+    match /agencies/{agencyId}/contractors/{docId} {
+      allow read: if canReadAgency(agencyId, 'contractors.read');
+      allow create, update, delete: if canWriteAgency(agencyId, 'contractors.write');
+    }
+
+    match /agencies/{agencyId}/settings/{docId} {
+      allow read: if canReadAgency(agencyId, 'settings.read');
+      allow create, update, delete: if canWriteAgency(agencyId, 'settings.write');
+    }
+
+    match /agencies/{agencyId}/crm/{docId} {
+      allow read: if canReadAgency(agencyId, 'crm.read');
+      allow create, update, delete: if canWriteAgency(agencyId, 'crm.write');
+    }
+
+    // Top-level collection: /auditLogs/{logId}. Deploy with: firebase deploy --only firestore:rules
+    match /auditLogs/{logId} {
+      allow read: if userExists() && isRole('superAdmin');
+      allow create: if request.auth != null
+        && request.resource.data.get('performedByUid', '') == request.auth.uid
+        && request.resource.data.get('action', '') is string;
+      allow update, delete: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

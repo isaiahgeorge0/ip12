@@ -31,6 +31,25 @@ export function ticketsCol(agencyId: string): string {
   return `agencies/${agencyId}/tickets`;
 }
 
+/** Notes subcollection under a ticket. */
+export function ticketNotesCol(agencyId: string, ticketId: string): string {
+  return `agencies/${agencyId}/tickets/${ticketId}/notes`;
+}
+
 export function contractorJobsCol(agencyId: string): string {
   return `agencies/${agencyId}/contractorJobs`;
+}
+
+/** Join collection: landlordUid -> propertyId + agencyId. */
+export function propertyLandlordsCol(): string {
+  return "propertyLandlords";
+}
+
+/** Grants: which agencies can view a landlord's full cross-agency inventory. Doc id = landlordUid. */
+export function landlordAgencyGrantsCol(): string {
+  return "landlordAgencyGrants";
+}
+
+export function landlordAgencyGrantDoc(landlordUid: string): string {
+  return `${landlordAgencyGrantsCol()}/${landlordUid}`;
 }

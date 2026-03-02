@@ -32,3 +32,14 @@ Backend and auth are not connected yet. Placeholders live under:
 - **`src/lib/types/`** — Shared TypeScript types.
 
 Wire these when adding Firebase (and env vars) in a later step.
+
+## Landlord dashboard — test data (dev only)
+
+The landlord dashboard at `/landlord` shows properties from the join collection **`propertyLandlords`**. To test locally, add a document in that collection (e.g. via Firebase Console or Admin SDK) with:
+
+- **`landlordUid`** (string): Firebase UID of the landlord user.
+- **`propertyId`** (string): Document ID of the property in `agencies/{agencyId}/properties/{propertyId}`.
+- **`agencyId`** (string): Agency that owns the property.
+- **`createdAt`** (optional): Server timestamp.
+
+Example (Firebase Console or script): collection `propertyLandlords`, document ID any; fields: `landlordUid`, `propertyId`, `agencyId`, `createdAt`. The property must already exist under `agencies/{agencyId}/properties/{propertyId}` with at least `displayAddress` (or `address`/`title`) and optionally `postcode`, `status`.

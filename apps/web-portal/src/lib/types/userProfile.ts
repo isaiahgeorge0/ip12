@@ -5,15 +5,25 @@ import type { Role, Permission } from "./roles";
  */
 export type FirestoreTimestamp = { seconds: number; nanoseconds: number };
 
-export type UserProfileStatus = "active" | "invited" | "disabled";
+export type UserProfileStatus = "active" | "invited" | "pending" | "disabled";
 
 export interface UserProfile {
   uid: string;
   email: string;
   role: Role;
   permissions: Permission[];
-  agencyId: string | null;
+  /** Multi-agency: list of agency ids this user (e.g. landlord) belongs to. */
+  agencyIds: string[];
+  /** Convenience; defaults to first entry in agencyIds. */
+  primaryAgencyId?: string | null;
+  /** @deprecated Use agencyIds. Kept for migration: if agencyId exists, treat as agencyIds: [agencyId]. */
+  agencyId?: string | null;
   status: UserProfileStatus;
   createdAt: FirestoreTimestamp;
   updatedAt: FirestoreTimestamp;
+  /** Optional; used e.g. in landlord portal. */
+  displayName?: string;
+  /** Set when inviting a landlord; set status to "active" on first login. */
+  invitedAt?: FirestoreTimestamp;
+  invitedByUid?: string;
 }

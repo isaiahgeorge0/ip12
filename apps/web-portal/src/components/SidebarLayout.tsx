@@ -7,9 +7,15 @@ type SidebarLayoutProps = {
   children: ReactNode;
   title: string;
   navItems: NavItem[];
+  footerContent?: ReactNode;
 };
 
-export function SidebarLayout({ children, title, navItems }: SidebarLayoutProps) {
+export function SidebarLayout({
+  children,
+  title,
+  navItems,
+  footerContent,
+}: SidebarLayoutProps) {
   return (
     <div className="min-h-screen flex bg-zinc-100">
       <aside className="w-56 border-r border-zinc-200 bg-white flex flex-col">
@@ -30,6 +36,9 @@ export function SidebarLayout({ children, title, navItems }: SidebarLayoutProps)
             </Link>
           ))}
         </nav>
+        {footerContent != null ? (
+          <div className="p-2 border-t border-zinc-200">{footerContent}</div>
+        ) : null}
       </aside>
       <div className="flex-1 flex flex-col">
         <header className="h-14 border-b border-zinc-200 bg-white flex items-center px-6">
