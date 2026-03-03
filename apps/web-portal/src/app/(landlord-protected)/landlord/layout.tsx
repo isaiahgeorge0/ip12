@@ -1,20 +1,11 @@
 import { redirect } from "next/navigation";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSession, assertRole } from "@/lib/auth/authz";
 import { LandlordLayoutClient } from "./LandlordLayoutClient";
-
-const LANDLORD_ALLOWED_ROLES = ["superAdmin", "landlord"] as const;
 
 export default async function LandlordLayout({
   children,
 }: { children: React.ReactNode }) {
-  const session = await getServerSession();
-
-  if (!session) {
-    if (process.env.NODE_ENV !== "production") {
-      console.info("[Role Debug] landlord layout: no session -> redirect to landlord sign-in");
-    }
-    redirect("/landlord/sign-in");
-  }
+  const session = await requireServerSession("/landlord/sign-in");
 
   if (session.status !== "active") {
     if (process.env.NODE_ENV !== "production") {
@@ -23,12 +14,7 @@ export default async function LandlordLayout({
     redirect("/auth/disabled");
   }
 
-  if (!LANDLORD_ALLOWED_ROLES.includes(session.role as (typeof LANDLORD_ALLOWED_ROLES)[number])) {
-    if (process.env.NODE_ENV !== "production") {
-      console.info("[Role Debug] landlord layout: role", session.role, "-> redirect to admin");
-    }
-    redirect("/admin");
-  }
+  assertRole(session, ["landlord", "superAdmin"], "/admin");
 
   return <LandlordLayoutClient>{children}</LandlordLayoutClient>;
 }
