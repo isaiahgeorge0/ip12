@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "@/lib/auth/serverSession";
+import type { Role } from "@/lib/types/roles";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { propertyLandlordsCol, userDoc } from "@/lib/firestore/paths";
 import { writePropertyLandlordAudit } from "@/lib/audit/propertyLandlordAudit";
@@ -7,7 +8,7 @@ import { writeAuditLog } from "@/lib/audit/writeAuditLog";
 
 const ADMIN_ROLES = ["admin", "superAdmin"] as const;
 
-function isAdmin(role: string): boolean {
+function isAdmin(role: Role): role is (typeof ADMIN_ROLES)[number] {
   return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
 }
 
@@ -80,7 +81,7 @@ export async function DELETE(
         writeAuditLog({
           action: "MUTATION_DENIED_PRIMARY_ONLY",
           actorUid: session.uid,
-          actorRole: session.role === "superAdmin" ? "superAdmin" : "admin",
+          actorRole: "admin",
           actorAgencyId: session.agencyId,
           targetType: "assignment",
           targetId: joinId,

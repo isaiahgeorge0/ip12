@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { redirect, notFound } from "next/navigation";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { notFound } from "next/navigation";
+import { requireServerSession, assertRole } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { propertyLandlordsCol, propertiesCol } from "@/lib/firestore/paths";
 import { PageHeader } from "@/components/PageHeader";
@@ -56,13 +56,11 @@ export default async function LandlordPropertyDetailPage({ params, searchParams 
     }
   }
 
-  const session = await getServerSession();
-
-  if (!session) redirect("/landlord/sign-in");
+  const session = await requireServerSession("/landlord/sign-in");
+  assertRole(session, ["landlord", "superAdmin"], "/admin");
 
   const isLandlord = session.role === "landlord";
   const isSuperAdmin = session.role === "superAdmin";
-  if (!isLandlord && !isSuperAdmin) redirect("/admin");
 
   const db = getAdminFirestore();
   const joinCol = db.collection(propertyLandlordsCol());
