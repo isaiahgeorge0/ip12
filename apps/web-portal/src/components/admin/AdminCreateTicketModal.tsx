@@ -76,16 +76,10 @@ export function AdminCreateTicketModal({
       return;
     }
     setForm({ propertyId: "", landlordUid: "", category: "General", title: "", description: "" });
-    if (!agencyId) {
-      setLoadingOptions(false);
-      setProperties([]);
-      setLandlords([]);
-      return;
-    }
+    if (propertyLocked) return;
     setLoadingOptions(true);
-    const q = `?agencyId=${encodeURIComponent(agencyId)}`;
     Promise.all([
-      fetch(`/api/admin/properties${q}`, { credentials: "include" }),
+      fetch("/api/admin/properties", { credentials: "include" }),
       fetch("/api/admin/landlords", { credentials: "include" }),
     ])
       .then(async ([r1, r2]) => {
@@ -98,12 +92,14 @@ export function AdminCreateTicketModal({
       })
       .catch(() => {})
       .finally(() => setLoadingOptions(false));
-  }, [open, agencyId, initialProperty?.agencyId, initialProperty?.propertyId]);
+  }, [open, initialProperty?.agencyId, initialProperty?.propertyId]);
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
-      const effectiveAgencyId = propertyLocked ? initialProperty!.agencyId : agencyId;
+      const effectiveAgencyId = propertyLocked
+        ? initialProperty!.agencyId
+        : (properties.find((p) => p.id === form.propertyId)?.agencyId ?? agencyId);
       const effectivePropertyId = propertyLocked ? initialProperty!.propertyId : form.propertyId.trim();
       if (!effectiveAgencyId || !effectivePropertyId || !form.title.trim()) {
         setError("Property and title are required.");
@@ -138,7 +134,7 @@ export function AdminCreateTicketModal({
         .catch(() => setError("Create failed"))
         .finally(() => setSubmitting(false));
     },
-    [propertyLocked, initialProperty, agencyId, form, onClose, onSuccess]
+    [propertyLocked, initialProperty, agencyId, properties, form, onClose, onSuccess]
   );
 
   const handleClose = useCallback(() => {
@@ -148,7 +144,9 @@ export function AdminCreateTicketModal({
 
   if (!open) return null;
 
-  const effectiveAgencyId = propertyLocked ? initialProperty!.agencyId : agencyId;
+  const effectiveAgencyId = propertyLocked
+    ? initialProperty!.agencyId
+    : (properties.find((p) => p.id === form.propertyId)?.agencyId ?? agencyId);
 
   return (
     <div

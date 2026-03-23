@@ -1,15 +1,81 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
-import { ticketsCol } from "@/lib/firestore/paths";
+import { ticketsCol, propertiesCol } from "@/lib/firestore/paths";
 import { writeTicketAudit } from "@/lib/audit/ticketAudit";
+import { propertyDisplayLabel } from "@/lib/admin/normalizePropertyDisplay";
+import { serializeTimestamp } from "@/lib/serialization";
 
-const ADMIN_ROLES = ["admin", "superAdmin"] as const;
 const ALLOWED_STATUSES = ["Open", "In progress", "Resolved"] as const;
 
-function isAdmin(role: string): boolean {
-  return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
+function resolveAgencyId(
+  session: { role: string; agencyId: string | null },
+  request: NextRequest
+): string | null {
+  let agencyId = session.agencyId ?? "";
+  if (!agencyId && session.role === "superAdmin") {
+    const q = request.nextUrl.searchParams.get("agencyId");
+    if (typeof q === "string" && q.trim()) agencyId = q.trim();
+  }
+  return agencyId || null;
+}
+
+/**
+ * GET /api/admin/tickets/[ticketId]
+ * Returns a single ticket. superAdmin may pass ?agencyId=.
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ ticketId: string }> }
+) {
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
+
+  const agencyId = resolveAgencyId(session, request);
+  if (!agencyId) {
+    return NextResponse.json({ error: "agencyId required" }, { status: 400 });
+  }
+
+  const { ticketId } = await params;
+  if (!ticketId) {
+    return NextResponse.json({ error: "ticketId required" }, { status: 400 });
+  }
+
+  const db = getAdminFirestore();
+  const ref = db.collection(ticketsCol(agencyId)).doc(ticketId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    return NextResponse.json({ error: "Ticket not found" }, { status: 404 });
+  }
+
+  const d = snap.data()!;
+  const propertyId = typeof d.propertyId === "string" ? d.propertyId : "";
+  let propertyDisplayLabelResolved = propertyId ? `Property ${propertyId}` : "";
+  if (propertyId) {
+    const propSnap = await db.doc(`${propertiesCol(agencyId)}/${propertyId}`).get();
+    if (propSnap.exists && propSnap.data()) {
+      propertyDisplayLabelResolved = propertyDisplayLabel(propSnap.data() as Record<string, unknown>, propertyId);
+    }
+  }
+
+  return NextResponse.json({
+    id: snap.id,
+    agencyId,
+    propertyId,
+    propertyDisplayLabel: propertyDisplayLabelResolved,
+    landlordUid: typeof d.landlordUid === "string" ? d.landlordUid : "",
+    status: typeof d.status === "string" ? d.status : "Open",
+    category: typeof d.category === "string" ? d.category : "General",
+    title: typeof d.title === "string" ? d.title : "",
+    description: typeof d.description === "string" ? d.description : "",
+    createdAt: serializeTimestamp(d.createdAt) ?? null,
+    updatedAt: serializeTimestamp(d.updatedAt) ?? null,
+    createdByUid: typeof d.createdByUid === "string" ? d.createdByUid : "",
+  });
 }
 
 /**
@@ -21,10 +87,11 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ ticketId: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const { ticketId } = await params;
   if (!ticketId) {

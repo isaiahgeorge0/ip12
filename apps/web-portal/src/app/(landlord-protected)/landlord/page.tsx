@@ -1,5 +1,4 @@
-import { redirect } from "next/navigation";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSession } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { propertyLandlordsCol, propertiesCol } from "@/lib/firestore/paths";
 import { serializeTimestamp } from "@/lib/serialization";
@@ -24,12 +23,7 @@ type PropertyData = {
 };
 
 export default async function LandlordDashboardPage() {
-  const session = await getServerSession();
-  if (!session) redirect("/landlord/sign-in");
-
-  const isLandlord = session.role === "landlord";
-  const isSuperAdmin = session.role === "superAdmin";
-  if (!isLandlord && !isSuperAdmin) redirect("/admin");
+  const session = await requireServerSession("/landlord/sign-in");
 
   // Landlord portal stays landlord-scoped by default (even for superAdmin). No
   // "view all" mode; superAdmin can use the API with ?landlordUid= for other users.

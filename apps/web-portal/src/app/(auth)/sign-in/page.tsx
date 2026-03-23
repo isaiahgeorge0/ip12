@@ -1,13 +1,24 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, Suspense } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { SiteHeader } from "@/components/SiteHeader";
 import { useAuth } from "@/contexts/AuthContext";
+import { getDefaultDestinationForRole } from "@/lib/auth/roleDestination";
 
-export default function SignInPage() {
+/** Safe to redirect after sign-in: public/portal pages only, no staff dashboards. */
+function isSafeReturnTo(path: string | null): boolean {
+  if (!path || path !== path.trim()) return false;
+  if (!path.startsWith("/")) return false;
+  if (path.startsWith("/admin") || path.startsWith("/landlord") || path.startsWith("/superadmin")) return false;
+  return true;
+}
+
+function SignInContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnTo = searchParams?.get("returnTo") ?? null;
   const { signIn, user, error, loading, clearError } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -15,15 +26,16 @@ export default function SignInPage() {
   const ensureAttemptedRef = useRef(false);
   const [isEnsuringSession, setIsEnsuringSession] = useState(false);
 
-  const redirectForRole = useCallback(
+  const redirectAfterSession = useCallback(
     (role: string) => {
-      const target = role === "landlord" ? "/landlord" : "/admin";
+      const safeReturn = returnTo && isSafeReturnTo(returnTo) ? returnTo : null;
+      const target = safeReturn ?? getDefaultDestinationForRole(role);
       if (process.env.NODE_ENV !== "production") {
-        console.info(`[SessionSync] session ok -> redirecting to ${target}`);
+        console.info(`[SessionSync] session ok -> redirecting to ${target}${safeReturn ? " (returnTo)" : ""}`);
       }
       router.replace(target);
     },
-    [router]
+    [router, returnTo]
   );
 
   useEffect(() => {
@@ -49,7 +61,7 @@ export default function SignInPage() {
       try {
         const currentSession = await fetchServerSession();
         if (currentSession?.role) {
-          redirectForRole(currentSession.role);
+          redirectAfterSession(currentSession.role);
           return;
         }
 
@@ -68,7 +80,7 @@ export default function SignInPage() {
 
         const refreshedSession = await fetchServerSession();
         if (refreshedSession?.role) {
-          redirectForRole(refreshedSession.role);
+          redirectAfterSession(refreshedSession.role);
           return;
         }
 
@@ -94,7 +106,7 @@ export default function SignInPage() {
     return () => {
       cancelled = true;
     };
-  }, [loading, user, redirectForRole]);
+  }, [loading, user, redirectAfterSession]);
 
   useEffect(() => {
     if (error) setIsSubmitting(false);
@@ -183,9 +195,12 @@ export default function SignInPage() {
           </form>
           <p className="mt-4 text-center text-sm text-zinc-500">
             No account?{" "}
-            <span className="text-zinc-400">
-              Contact admin to be invited.
-            </span>
+            <Link
+              href={returnTo && isSafeReturnTo(returnTo) ? `/sign-up?returnTo=${encodeURIComponent(returnTo)}` : "/sign-up"}
+              className="font-medium text-zinc-700 hover:underline"
+            >
+              Sign up
+            </Link>
           </p>
           <Link
             href="/"
@@ -196,5 +211,20 @@ export default function SignInPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex flex-col bg-zinc-50">
+        <SiteHeader />
+        <main className="flex-1 flex items-center justify-center px-4">
+          <p className="text-sm text-zinc-500">Loading…</p>
+        </main>
+      </div>
+    }>
+      <SignInContent />
+    </Suspense>
   );
 }

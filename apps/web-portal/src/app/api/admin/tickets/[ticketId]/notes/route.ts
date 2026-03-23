@@ -1,17 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { ticketsCol, ticketNotesCol, userDoc } from "@/lib/firestore/paths";
 import { writeTicketAudit } from "@/lib/audit/ticketAudit";
 
-const ADMIN_ROLES = ["admin", "superAdmin"] as const;
 const TEXT_MIN = 1;
 const TEXT_MAX = 2000;
-
-function isAdmin(role: string): boolean {
-  return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
-}
 
 function resolveAgencyId(
   session: { role: string; agencyId: string | null },
@@ -33,10 +28,11 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ ticketId: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const agencyId = resolveAgencyId(session, request);
   if (!agencyId) {
@@ -84,10 +80,11 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ ticketId: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const agencyId = resolveAgencyId(session, request);
   if (!agencyId) {

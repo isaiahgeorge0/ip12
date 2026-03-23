@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { serializeTimestamp } from "@/lib/serialization";
 
@@ -13,10 +13,11 @@ const MAX_LIMIT = 200;
  * Timestamps serialized to ms for client.
  */
 export async function GET(request: NextRequest) {
-  const session = await getServerSession();
-  if (!session || session.role !== "superAdmin") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["superAdmin"]);
+  if (role403) return role403;
 
   const { searchParams } = new URL(request.url);
   const actionContains = searchParams.get("actionContains")?.trim() ?? "";

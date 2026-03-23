@@ -1,16 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { ticketsCol, propertiesCol, propertyLandlordsCol } from "@/lib/firestore/paths";
 import { writeTicketAudit } from "@/lib/audit/ticketAudit";
 import { getAllowedAgencyIdsForAdminTickets } from "@/lib/landlordGrants";
-
-const ADMIN_ROLES = ["admin", "superAdmin"] as const;
-
-function isAdmin(role: string): boolean {
-  return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
-}
 
 function resolveAgencyId(
   session: { role: string; agencyId: string | null },
@@ -33,13 +27,14 @@ function joinId(agencyId: string, propertyId: string, landlordUid: string): stri
  * grant visibility (cross-agency read). superAdmin may pass ?agencyId= to scope to one agency.
  */
 export async function GET(request: NextRequest) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const { searchParams } = new URL(request.url);
-  let agencyIdParam = searchParams.get("agencyId")?.trim() || null;
+  const agencyIdParam = searchParams.get("agencyId")?.trim() || null;
 
   const db = getAdminFirestore();
 
@@ -137,10 +132,11 @@ export async function GET(request: NextRequest) {
  * If landlordUid provided, requires propertyLandlords join doc for (agencyId, propertyId, landlordUid).
  */
 export async function POST(request: NextRequest) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   let body: {
     agencyId?: string;

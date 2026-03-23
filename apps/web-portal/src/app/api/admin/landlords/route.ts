@@ -1,13 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { landlordAgencyGrantsCol, userDoc } from "@/lib/firestore/paths";
-
-const ADMIN_ROLES = ["admin", "superAdmin"] as const;
-
-function isAdmin(role: string): boolean {
-  return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
-}
 
 type DocSnap = { id: string; data: () => Record<string, unknown> | undefined };
 
@@ -45,10 +39,11 @@ function toLandlordRow(doc: DocSnap): {
  * Sorted by displayName then email.
  */
 export async function GET(_request: NextRequest) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const db = getAdminFirestore();
   const col = db.collection("users");

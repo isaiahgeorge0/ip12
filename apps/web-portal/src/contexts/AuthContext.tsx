@@ -89,7 +89,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         const isStaff = STAFF_ROLES.includes(p.role);
         const isLandlord = p.role === "landlord";
-        if (!isStaff && !isLandlord) {
+        const isPublicOrLead = p.role === "public" || p.role === "lead";
+        if (!isStaff && !isLandlord && !isPublicOrLead) {
           await firebaseSignOut(auth);
           setUser(null);
           setProfile(null);
@@ -97,9 +98,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setLoading(false);
           return;
         }
-        // Strict disabled lockout: only status === "active" may use the app.
-        // Testing: set user doc status to "disabled" in Firestore -> refresh -> should sign out and show "Account disabled". Set back to "active" -> login works.
-        if (p.status !== "active") {
+        // Only disabled accounts are locked out; pending/invited are allowed (landlord pending is upgraded to active on first serverSession read).
+        if (p.status === "disabled") {
           await firebaseSignOut(auth);
           setUser(null);
           setProfile(null);

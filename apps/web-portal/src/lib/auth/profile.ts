@@ -58,5 +58,6 @@ export async function fetchUserProfile(uid: string): Promise<UserProfile | null>
     createdAt,
     updatedAt,
     ...(typeof d.displayName === "string" && { displayName: d.displayName }),
+    ...(typeof d.phone === "string" && { phone: d.phone }),
   };
 }

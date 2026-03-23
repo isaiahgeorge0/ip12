@@ -56,24 +56,22 @@ service cloud.firestore {
         && request.resource.data.get('createdAt', null) == resource.data.get('createdAt', null);
     }
 
-    function onlyKeys(data, allowedKeys) {
-      return data.keys().hasOnly(allowedKeys);
-    }
-
-    function ticketAllowedKeys() {
-      return set('title', 'propertyRef', 'description', 'priority', 'status', 'createdAt', 'updatedAt', 'createdByUid');
+    function onlyTicketKeys(data) {
+      return data.keys().size() == 8
+        && 'title' in data && 'propertyRef' in data && 'description' in data && 'priority' in data
+        && 'status' in data && 'createdAt' in data && 'updatedAt' in data && 'createdByUid' in data;
     }
 
     function validTicketPriority(p) {
-      return p in set('Low', 'Medium', 'High');
+      return p == 'Low' || p == 'Medium' || p == 'High';
     }
 
     function validTicketStatus(s) {
-      return s in set('Open', 'In progress', 'Resolved');
+      return s == 'Open' || s == 'In progress' || s == 'Resolved';
     }
 
     function ticketCreateValid(data) {
-      return onlyKeys(data, ticketAllowedKeys())
+      return onlyTicketKeys(data)
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
         && data.propertyRef is string && data.propertyRef.size() >= 1 && data.propertyRef.size() <= 120
         && data.description is string && data.description.size() >= 1 && data.description.size() <= 2000
@@ -85,7 +83,7 @@ service cloud.firestore {
     }
 
     function ticketUpdateValid(data, existing) {
-      return onlyKeys(data, ticketAllowedKeys())
+      return onlyTicketKeys(data)
         && data.createdAt == existing.createdAt
         && data.createdByUid == existing.createdByUid
         && data.updatedAt is timestamp
@@ -103,6 +101,12 @@ service cloud.firestore {
       allow create, delete: if userExists() && isRole('superAdmin');
       allow update: if (request.auth != null && request.auth.uid == userId && isSafeUserUpdate())
         || (userExists() && isRole('superAdmin'));
+    }
+
+    // Applicant CRM profile keyed by userId. Written only by server (enquiry API). User reads own for prefill.
+    match /applicants/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create, update, delete: if false;
     }
 
     match /agencies/{agencyId}/tickets/{ticketId} {
@@ -127,6 +131,36 @@ service cloud.firestore {
     match /agencies/{agencyId}/applications/{docId} {
       allow read: if canReadAgency(agencyId, 'applications.read');
       allow create, update, delete: if canWriteAgency(agencyId, 'applications.write');
+    }
+
+    // Enquiries from public listing; written only by API (server). Admins read via applications scope.
+    match /agencies/{agencyId}/enquiries/{enquiryId} {
+      allow read: if canReadAgency(agencyId, 'applications.read');
+      allow create, update, delete: if false;
+    }
+
+    // Viewings: agency-scoped property viewings. Written only by API (server). Admins read via applications scope.
+    match /agencies/{agencyId}/viewings/{viewingId} {
+      allow read: if canReadAgency(agencyId, 'applications.read');
+      allow create, update, delete: if false;
+    }
+
+    // Portal messages (e.g. proceed prompt). Written only by API. Admins read via applications scope.
+    match /agencies/{agencyId}/portalMessages/{messageId} {
+      allow read: if canReadAgency(agencyId, 'applications.read');
+      allow create, update, delete: if false;
+    }
+
+    // Application pipeline: operational workflow (proceed prompt / ready-to-apply / application-created). API-only write.
+    match /agencies/{agencyId}/applicationPipeline/{pipelineItemId} {
+      allow read: if canReadAgency(agencyId, 'applications.read');
+      allow create, update, delete: if false;
+    }
+
+    // Staff action queue: accepted offers needing handoff. API-only write.
+    match /agencies/{agencyId}/staffActionQueue/{queueItemId} {
+      allow read: if canReadAgency(agencyId, 'applications.read');
+      allow create, update, delete: if false;
     }
 
     match /agencies/{agencyId}/landlords/{docId} {
@@ -161,6 +195,13 @@ service cloud.firestore {
         && request.resource.data.get('performedByUid', '') == request.auth.uid
         && request.resource.data.get('action', '') is string;
       allow update, delete: if false;
+    }
+
+    // Global property index: written only by Cloud Function (Admin SDK). Clients read-only.
+    // For public map/search later: add a rule allowing read where resource.data.available == true.
+    match /propertyIndex/{docId} {
+      allow read: if userExists() && (hasPerm('properties.read') || isRole('superAdmin'));
+      allow write: if false;
     }
 
     match /{document=**} {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { propertyLandlordsCol, propertiesCol, userDoc } from "@/lib/firestore/paths";
 
@@ -11,20 +11,12 @@ export type LandlordPropertyItem = {
   status: string;
 };
 
-const LANDLORD_API_ROLES = ["landlord", "superAdmin"] as const;
-
 export async function GET(request: Request) {
-  const session = await getServerSession();
-  if (!session) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
-
-  const isAllowed = LANDLORD_API_ROLES.includes(
-    session.role as (typeof LANDLORD_API_ROLES)[number]
-  );
-  if (!isAllowed) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["landlord", "superAdmin"]);
+  if (role403) return role403;
 
   const { searchParams } = new URL(request.url);
   const landlordUid =

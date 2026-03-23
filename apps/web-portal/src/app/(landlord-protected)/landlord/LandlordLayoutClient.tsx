@@ -37,7 +37,7 @@ export function LandlordLayoutClient({
     return null;
   }
 
-  if (profile && profile.status !== "active") {
+  if (profile && profile.status === "disabled") {
     return (
       <div className="min-h-screen flex flex-col bg-zinc-100 p-6">
         <PageHeader title="Landlord Portal" />

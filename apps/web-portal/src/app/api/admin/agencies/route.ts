@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 
 /**
@@ -8,10 +8,11 @@ import { getAdminFirestore } from "@/lib/firebase/admin";
  * Firestore: single collection "agencies" list; no composite index needed.
  */
 export async function GET(_request: NextRequest) {
-  const session = await getServerSession();
-  if (!session || session.role !== "superAdmin") {
-    return NextResponse.json({ error: "Forbidden: superAdmin only" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["superAdmin"]);
+  if (role403) return role403;
 
   const db = getAdminFirestore();
   const snap = await db.collection("agencies").get();

@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
 import { useAuth } from "@/contexts/AuthContext";
+import { HistoryBackLink } from "@/components/HistoryBackLink";
 
 type LandlordProfile = {
   uid: string;
@@ -23,7 +24,11 @@ type InventoryItem = {
   propertyId: string;
   displayAddress: string;
   postcode: string;
+  type: string;
+  bedrooms: number | null;
+  bathrooms: number | null;
   status: string;
+  propertyMissing?: boolean;
 };
 
 type Grant = {
@@ -52,8 +57,11 @@ function StatusChip({ status }: { status: string }) {
 
 export default function AdminLandlordDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const landlordUid = params?.landlordUid as string | undefined;
   const { profile } = useAuth();
+  const queryAgencyId = searchParams?.get("agencyId")?.trim() ?? "";
+  const effectiveAgencyId = queryAgencyId || profile?.agencyId || "";
   const [landlord, setLandlord] = useState<LandlordProfile | null>(null);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [grant, setGrant] = useState<Grant | null>(null);
@@ -82,9 +90,12 @@ export default function AdminLandlordDetailPage() {
     setError(null);
     Promise.all([
       fetch(`/api/admin/landlords/${encodeURIComponent(landlordUid)}`, { credentials: "include" }),
-      fetch(`/api/admin/landlords/${encodeURIComponent(landlordUid)}/inventory`, {
-        credentials: "include",
-      }),
+      fetch(
+        `/api/admin/landlords/${encodeURIComponent(landlordUid)}/inventory${
+          effectiveAgencyId ? `?agencyId=${encodeURIComponent(effectiveAgencyId)}` : ""
+        }`,
+        { credentials: "include" }
+      ),
       fetch(`/api/admin/landlord-grants?landlordUid=${encodeURIComponent(landlordUid)}`, {
         credentials: "include",
       }),
@@ -118,13 +129,16 @@ export default function AdminLandlordDetailPage() {
         setMembershipPrimaryId(prim);
       })
       .catch(() => {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[AdminLandlordDetail] failed loading landlord/inventory");
+        }
         setError("Failed to load");
         setLandlord(null);
         setInventory([]);
         setGrant(null);
       })
       .finally(() => setLoading(false));
-  }, [landlordUid]);
+  }, [landlordUid, effectiveAgencyId]);
 
   useEffect(() => {
     load();
@@ -225,12 +239,12 @@ export default function AdminLandlordDetailPage() {
         <PageHeader title="Landlord" />
         <Card className="p-6 mt-4">
           <p className="text-sm text-red-600">{error ?? "Landlord not found."}</p>
-          <Link
+          <HistoryBackLink
             href="/admin/landlords"
             className="mt-2 inline-block text-sm font-medium text-zinc-600 hover:underline"
           >
             ← Back to Landlords
-          </Link>
+          </HistoryBackLink>
         </Card>
       </>
     );
@@ -254,12 +268,12 @@ export default function AdminLandlordDetailPage() {
             </span>
           )}
         </div>
-        <Link
+        <HistoryBackLink
           href="/admin/landlords"
           className="mt-2 inline-block text-sm font-medium text-zinc-600 hover:underline"
         >
           ← Back to Landlords
-        </Link>
+        </HistoryBackLink>
       </Card>
 
       <Card className="p-6 mt-4">
@@ -468,6 +482,12 @@ export default function AdminLandlordDetailPage() {
                     Postcode
                   </th>
                   <th className="py-2 px-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
+                    Type
+                  </th>
+                  <th className="py-2 px-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
+                    Beds / Baths
+                  </th>
+                  <th className="py-2 px-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
                     Agency
                   </th>
                   <th className="py-2 px-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
@@ -481,8 +501,16 @@ export default function AdminLandlordDetailPage() {
               <tbody className="divide-y divide-zinc-200">
                 {inventory.map((row) => (
                   <tr key={`${row.agencyId}-${row.propertyId}`} className="bg-white">
-                    <td className="py-2 px-3 text-sm text-zinc-900">{row.displayAddress || "—"}</td>
+                    <td className="py-2 px-3 text-sm text-zinc-900">
+                      {row.propertyMissing ? `Property ${row.propertyId} — Property record missing` : row.displayAddress || "—"}
+                    </td>
                     <td className="py-2 px-3 text-sm text-zinc-600">{row.postcode || "—"}</td>
+                    <td className="py-2 px-3 text-sm text-zinc-600">{row.type || "—"}</td>
+                    <td className="py-2 px-3 text-sm text-zinc-600">
+                      {row.bedrooms != null || row.bathrooms != null
+                        ? `${row.bedrooms ?? "—"} / ${row.bathrooms ?? "—"}`
+                        : "—"}
+                    </td>
                     <td className="py-2 px-3 text-sm text-zinc-600">{row.agencyId}</td>
                     <td className="py-2 px-3">
                       <StatusChip status={row.status} />

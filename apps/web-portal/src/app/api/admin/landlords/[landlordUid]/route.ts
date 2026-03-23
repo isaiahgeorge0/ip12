@@ -1,14 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { userDoc, landlordAgencyGrantDoc } from "@/lib/firestore/paths";
 import { canAdminViewLandlord } from "@/lib/landlordGrants";
-
-const ADMIN_ROLES = ["admin", "superAdmin"] as const;
-
-function isAdmin(role: string): boolean {
-  return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
-}
 
 /**
  * GET /api/admin/landlords/[landlordUid]
@@ -18,10 +12,11 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ landlordUid: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const { landlordUid } = await params;
   if (!landlordUid) {
@@ -67,10 +62,11 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ landlordUid: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || session.role !== "superAdmin") {
-    return NextResponse.json({ error: "Forbidden: superAdmin only" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["superAdmin"]);
+  if (role403) return role403;
 
   const { landlordUid } = await params;
   if (!landlordUid) {

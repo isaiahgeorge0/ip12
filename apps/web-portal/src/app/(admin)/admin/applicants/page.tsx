@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   addDoc,
   collection,
@@ -10,12 +11,14 @@ import {
   serverTimestamp,
   onSnapshot,
 } from "firebase/firestore";
-import { PageHeader } from "@/components/PageHeader";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
 import { useAuth } from "@/contexts/AuthContext";
 import { getFirebaseFirestore } from "@/lib/firebase/client";
+import { ENQUIRY_STATUS_LABELS, type EnquiryStatus } from "@/lib/types/enquiry";
 import { applicationsCol } from "@/lib/firestore/paths";
+import { formatAdminDate } from "@/lib/admin/formatAdminDate";
 
 type ApplicantStatus =
   | "New"
@@ -39,13 +42,10 @@ type Applicant = {
 };
 
 function formatApplicantDate(v: unknown): string {
-  if (v == null) return "—";
-  const t = v as { seconds?: number; toDate?: () => Date };
-  if (typeof t.toDate === "function") return t.toDate().toLocaleDateString();
-  if (typeof t.seconds === "number") {
-    return new Date(t.seconds * 1000).toLocaleDateString();
-  }
-  return String(v);
+  return formatAdminDate(
+    v as unknown as number | string | { seconds?: number; toDate?: () => Date } | null | undefined,
+    "date"
+  );
 }
 
 function StatusChip({ status }: { status: string }) {
@@ -75,6 +75,49 @@ const APPLICANT_STATUSES: ApplicantStatus[] = [
   "Rejected",
 ];
 
+function ConvertEnquiryButton({
+  enquiryId,
+  agencyId,
+  onSuccess,
+  onError,
+}: {
+  enquiryId: string | null;
+  agencyId: string;
+  onSuccess: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  if (!enquiryId) return <span className="text-zinc-400">—</span>;
+  return (
+    <button
+      type="button"
+      disabled={submitting}
+      onClick={() => {
+        setSubmitting(true);
+        fetch(`/api/admin/enquiries/${enquiryId}/convert`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ agencyId }),
+        })
+          .then(async (res) => {
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.applicantId) {
+              onSuccess();
+            } else {
+              onError(data?.error ?? "Convert failed");
+            }
+          })
+          .catch(() => onError("Convert failed"))
+          .finally(() => setSubmitting(false));
+      }}
+      className="rounded border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+    >
+      {submitting ? "Converting…" : "Convert to CRM"}
+    </button>
+  );
+}
+
 const defaultCreateForm = {
   fullName: "",
   email: "",
@@ -86,6 +129,7 @@ const defaultCreateForm = {
 
 export default function AdminApplicantsPage() {
   const { profile, user } = useAuth();
+  const searchParams = useSearchParams();
   const [applicants, setApplicants] = useState<Applicant[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
@@ -93,8 +137,44 @@ export default function AdminApplicantsPage() {
   const [createForm, setCreateForm] = useState(defaultCreateForm);
   const [toast, setToast] = useState<string | null>(null);
 
-  const agencyId = profile?.agencyId ?? null;
+  const agencyIdParam = searchParams?.get("agencyId")?.trim() ?? null;
+  const isSuperAdmin = profile?.role === "superAdmin";
+  const sessionAgencyId = profile?.agencyId ?? null;
+  const effectiveAgencyId = isSuperAdmin ? agencyIdParam : sessionAgencyId;
+  const pageSubtitle = "Track applicants and conversions from enquiries.";
   const db = getFirebaseFirestore();
+
+  type EnquiryRow = {
+    id: string;
+    propertyId: string;
+    propertyDisplayLabel?: string;
+    agencyId: string;
+    applicantName: string;
+    applicantEmail: string;
+    applicantPhone?: string | null;
+    message: string;
+    moveInDate?: string | null;
+    status: EnquiryStatus;
+    internalNotes?: string | null;
+    createdAt: unknown;
+  };
+  const [enquiries, setEnquiries] = useState<EnquiryRow[]>([]);
+  const [loadingEnquiries, setLoadingEnquiries] = useState(false);
+
+  type ApplicantFromEnquiry = {
+    userId: string;
+    fullName: string;
+    email: string;
+    phone: string | null;
+    lastEnquiryAt: number | null;
+    enquiryCount: number;
+    latestEnquiryStatus: EnquiryStatus;
+    latestEnquiryId: string | null;
+    existingApplicantId: string | null;
+    recentEnquiries: { enquiryId: string; propertyId: string; propertyDisplayLabel?: string; createdAt: number | null; status: EnquiryStatus }[];
+  };
+  const [applicantsFromEnquiries, setApplicantsFromEnquiries] = useState<ApplicantFromEnquiry[]>([]);
+  const [loadingApplicantsList, setLoadingApplicantsList] = useState(false);
 
   useEffect(() => {
     if (toast) {
@@ -104,12 +184,12 @@ export default function AdminApplicantsPage() {
   }, [toast]);
 
   useEffect(() => {
-    if (!db || !agencyId) {
+    if (!db || !effectiveAgencyId) {
       setLoading(false);
       setApplicants([]);
       return;
     }
-    const colRef = collection(db, applicationsCol(agencyId));
+    const colRef = collection(db, applicationsCol(effectiveAgencyId));
     const q = query(colRef, orderBy("updatedAt", "desc"));
     const unsub = onSnapshot(
       q,
@@ -138,16 +218,46 @@ export default function AdminApplicantsPage() {
       }
     );
     return () => unsub();
-  }, [db, agencyId]);
+  }, [db, effectiveAgencyId]);
+
+  useEffect(() => {
+    if (!effectiveAgencyId) {
+      setEnquiries([]);
+      return;
+    }
+    setLoadingEnquiries(true);
+    fetch(`/api/admin/enquiries?agencyId=${encodeURIComponent(effectiveAgencyId)}&limit=30`, {
+      credentials: "include",
+    })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: EnquiryRow[]) => setEnquiries(Array.isArray(data) ? data : []))
+      .catch(() => setEnquiries([]))
+      .finally(() => setLoadingEnquiries(false));
+  }, [effectiveAgencyId]);
+
+  useEffect(() => {
+    if (!effectiveAgencyId) {
+      setApplicantsFromEnquiries([]);
+      return;
+    }
+    setLoadingApplicantsList(true);
+    fetch(`/api/admin/applicants-list?agencyId=${encodeURIComponent(effectiveAgencyId)}&limit=50`, {
+      credentials: "include",
+    })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: ApplicantFromEnquiry[]) => setApplicantsFromEnquiries(Array.isArray(data) ? data : []))
+      .catch(() => setApplicantsFromEnquiries([]))
+      .finally(() => setLoadingApplicantsList(false));
+  }, [effectiveAgencyId]);
 
   const handleCreateSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!db || !agencyId || !user) return;
+      if (!db || !effectiveAgencyId || !user) return;
       if (!createForm.fullName.trim() || !createForm.email.trim()) return;
       setSubmitting(true);
       try {
-        const colRef = collection(db, applicationsCol(agencyId));
+        const colRef = collection(db, applicationsCol(effectiveAgencyId));
         await addDoc(colRef, {
           fullName: createForm.fullName.trim(),
           email: createForm.email.trim(),
@@ -166,13 +276,13 @@ export default function AdminApplicantsPage() {
         setSubmitting(false);
       }
     },
-    [db, agencyId, user, createForm]
+    [db, effectiveAgencyId, user, createForm]
   );
 
-  if (!agencyId) {
+  if (!effectiveAgencyId && !isSuperAdmin) {
     return (
       <>
-        <PageHeader title="Applicants" />
+        <AdminPageHeader title="Applicants" subtitle={pageSubtitle} />
         <EmptyState
           title="No agency"
           description="Your account is not linked to an agency."
@@ -180,6 +290,20 @@ export default function AdminApplicantsPage() {
       </>
     );
   }
+
+  if (isSuperAdmin && !effectiveAgencyId) {
+    return (
+      <>
+        <AdminPageHeader title="Applicants" subtitle={pageSubtitle} />
+        <EmptyState
+          title="Select an agency from the header to view applicants."
+          description="Use the agency dropdown in the top bar."
+        />
+      </>
+    );
+  }
+
+  const queryStr = effectiveAgencyId ? `?agencyId=${encodeURIComponent(effectiveAgencyId)}` : "";
 
   return (
     <>
@@ -192,9 +316,10 @@ export default function AdminApplicantsPage() {
         </div>
       )}
 
-      <PageHeader
+      <AdminPageHeader
         title="Applicants"
-        action={
+        subtitle={pageSubtitle}
+        primaryAction={
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
@@ -209,10 +334,10 @@ export default function AdminApplicantsPage() {
         <div className="text-sm text-zinc-500">Loading applicants…</div>
       )}
 
-      {!loading && applicants.length === 0 && (
+      {!loading && applicants.length === 0 && enquiries.length === 0 && applicantsFromEnquiries.length === 0 && (
         <EmptyState
           title="No applicants yet"
-          description="Create an applicant to get started."
+          description="Create an applicant or wait for enquiries from the public listings."
           action={
             <button
               type="button"
@@ -225,9 +350,145 @@ export default function AdminApplicantsPage() {
         />
       )}
 
-      {!loading && applicants.length > 0 && (
-        <div className="space-y-2">
-          {applicants.map((app) => (
+      {!loading && (applicants.length > 0 || enquiries.length > 0 || applicantsFromEnquiries.length > 0) && (
+        <>
+          {applicantsFromEnquiries.length > 0 && (
+            <Card className="mb-6 p-4">
+              <h2 className="text-base font-medium text-zinc-900 mb-3">Applicants from enquiries</h2>
+              {loadingApplicantsList ? (
+                <p className="text-sm text-zinc-500">Loading…</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-zinc-200">
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">Name</th>
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">Email</th>
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">Phone</th>
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">Enquiries</th>
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">Last enquiry</th>
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">Status</th>
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">Property / context</th>
+                        <th className="text-left py-2 font-medium text-zinc-700">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {applicantsFromEnquiries.map((a) => (
+                        <tr key={a.userId} className="border-b border-zinc-100">
+                          <td className="py-2 pr-4 text-zinc-900">{a.fullName || "—"}</td>
+                          <td className="py-2 pr-4 text-zinc-600">{a.email || "—"}</td>
+                          <td className="py-2 pr-4 text-zinc-600">{a.phone || "—"}</td>
+                          <td className="py-2 pr-4 text-zinc-600">{a.enquiryCount}</td>
+                          <td className="py-2 pr-4 text-zinc-600">
+                            {a.lastEnquiryAt
+                              ? new Date(a.lastEnquiryAt).toLocaleString()
+                              : "—"}
+                          </td>
+                          <td className="py-2 pr-4">
+                            <span className="rounded px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800">
+                              {ENQUIRY_STATUS_LABELS[a.latestEnquiryStatus] ?? a.latestEnquiryStatus}
+                            </span>
+                          </td>
+                          <td className="py-2 text-zinc-600">
+                            {a.recentEnquiries.slice(0, 3).map((e) => (
+                              <Link
+                                key={e.enquiryId}
+                                href={`/admin/properties/${e.propertyId}${queryStr}`}
+                                className="block text-xs text-zinc-600 hover:underline"
+                              >
+                                {e.propertyDisplayLabel ?? `Property ${e.propertyId}`}
+                              </Link>
+                            ))}
+                          </td>
+                          <td className="py-2">
+                            {a.existingApplicantId ? (
+                              <Link
+                                href={`/admin/applicants/${a.existingApplicantId}${queryStr}`}
+                                className="text-xs font-medium text-zinc-700 hover:underline"
+                              >
+                                View applicant →
+                              </Link>
+                            ) : (
+                              <ConvertEnquiryButton
+                                enquiryId={a.latestEnquiryId}
+                                agencyId={effectiveAgencyId!}
+                                onSuccess={() => {
+                                  setToast("Applicant created");
+                                  setLoadingApplicantsList(true);
+                                  fetch(`/api/admin/applicants-list?agencyId=${encodeURIComponent(effectiveAgencyId!)}&limit=50`, { credentials: "include" })
+                                    .then((res) => (res.ok ? res.json() : []))
+                                    .then((data: ApplicantFromEnquiry[]) => setApplicantsFromEnquiries(Array.isArray(data) ? data : []))
+                                    .catch(() => {})
+                                    .finally(() => setLoadingApplicantsList(false));
+                                }}
+                                onError={(msg) => setToast(msg)}
+                              />
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+          )}
+          {enquiries.length > 0 && (
+            <Card className="mb-6 p-4">
+              <h2 className="text-base font-medium text-zinc-900 mb-3">Recent enquiries (from listings)</h2>
+              {loadingEnquiries ? (
+                <p className="text-sm text-zinc-500">Loading…</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-zinc-200">
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">Name</th>
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">Email</th>
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">When</th>
+                        <th className="text-left py-2 pr-4 font-medium text-zinc-700">Status</th>
+                        <th className="text-left py-2 font-medium text-zinc-700">Message / Property</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {enquiries.slice(0, 15).map((e) => (
+                        <tr key={e.id} className="border-b border-zinc-100">
+                          <td className="py-2 pr-4 text-zinc-900">{e.applicantName || "—"}</td>
+                          <td className="py-2 pr-4 text-zinc-600">{e.applicantEmail || "—"}</td>
+                          <td className="py-2 pr-4 text-zinc-600">
+                            {typeof e.createdAt === "number"
+                              ? new Date(e.createdAt).toLocaleString()
+                              : formatApplicantDate(e.createdAt)}
+                          </td>
+                          <td className="py-2 pr-4">
+                            <span className="rounded px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800">
+                              {ENQUIRY_STATUS_LABELS[e.status as EnquiryStatus] ?? e.status}
+                            </span>
+                          </td>
+                          <td className="py-2 text-zinc-600">
+                            <span className="max-w-[200px] truncate block" title={e.message}>
+                              {e.message || "—"}
+                            </span>
+                            <Link
+                              href={`/admin/properties/${e.propertyId}?agencyId=${encodeURIComponent(e.agencyId)}`}
+                              className="text-xs text-zinc-500 hover:underline mt-0.5 inline-block"
+                            >
+                              {e.propertyDisplayLabel ?? `Property ${e.propertyId}`} →
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+          )}
+          {applicants.length > 0 && (
+            <>
+              <h2 className="text-base font-medium text-zinc-900 mb-3">Applicants (CRM)</h2>
+              <div className="space-y-2">
+              {applicants.map((app) => (
             <Link key={app.id} href={`/admin/applicants/${app.id}`}>
               <Card className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between hover:border-zinc-400 transition-colors">
                 <div>
@@ -247,6 +508,9 @@ export default function AdminApplicantsPage() {
             </Link>
           ))}
         </div>
+            </>
+          )}
+        </>
       )}
 
       {createOpen && (

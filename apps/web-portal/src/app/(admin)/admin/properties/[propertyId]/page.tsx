@@ -9,7 +9,22 @@ import { Card } from "@/components/Card";
 import { useAuth } from "@/contexts/AuthContext";
 import { getFirebaseFirestore } from "@/lib/firebase/client";
 import { propertiesCol } from "@/lib/firestore/paths";
+import {
+  normalizedDisplayAddress,
+  safeRentPcm,
+} from "@/lib/admin/normalizePropertyDisplay";
+import { ENQUIRY_STATUSES, ENQUIRY_STATUS_LABELS, type EnquiryStatus } from "@/lib/types/enquiry";
+import { VIEWING_STATUSES, VIEWING_STATUS_LABELS, type ViewingStatus } from "@/lib/types/viewing";
 import { AdminCreateTicketModal } from "@/components/admin/AdminCreateTicketModal";
+import { AdminCreateOfferModal } from "@/components/admin/AdminCreateOfferModal";
+import { AdminProgressJourney, getJourneyStageFromData } from "@/components/admin/AdminProgressJourney";
+import { AdminNextActionCard } from "@/components/admin/AdminNextActionCard";
+import { AdminMatchScoreBadge } from "@/components/admin/AdminMatchScoreBadge";
+import { getNextAction, getFurthestPipelineStage } from "@/lib/workflow/getNextAction";
+import { AdminStatusBadge } from "@/components/admin/AdminStatusBadge";
+import { getStatusBadgeVariant } from "@/lib/admin/statusBadge";
+import { HistoryBackLink } from "@/components/HistoryBackLink";
+import { OFFER_STATUS_LABELS, type OfferStatus } from "@/lib/types/offer";
 
 type PropertyType = "House" | "Flat" | "Studio" | "Other";
 type PropertyStatus = "Available" | "Let" | "Sold" | "Off-market";
@@ -53,10 +68,14 @@ type AssignmentRow = {
   landlordUid: string;
   agencyId: string;
   propertyId: string;
+  landlordExternalId?: string;
   createdAt: unknown;
   status: string;
   email: string;
   displayName: string;
+  phone?: string;
+  externalId?: string;
+  userFound?: boolean;
   primaryAgencyId?: string | null;
 };
 
@@ -91,6 +110,82 @@ export default function AdminPropertyDetailPage() {
 
   const [createTicketOpen, setCreateTicketOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+
+  type EnquiryRow = {
+    id: string;
+    propertyId: string;
+    agencyId: string;
+    applicantName: string;
+    applicantEmail: string;
+    applicantPhone: string | null;
+    message: string;
+    moveInDate?: string | null;
+    hasPets?: boolean | null;
+    petDetails?: string | null;
+    hasChildren?: boolean | null;
+    employmentStatus?: string | null;
+    smoker?: boolean | null;
+    intendedOccupants?: number | null;
+    status: EnquiryStatus;
+    internalNotes: string | null;
+    statusUpdatedAt: number | null;
+    statusUpdatedBy: string | null;
+    createdAt: unknown;
+  };
+  const [enquiries, setEnquiries] = useState<EnquiryRow[]>([]);
+  const [loadingEnquiries, setLoadingEnquiries] = useState(false);
+  const [enquiryUpdatingId, setEnquiryUpdatingId] = useState<string | null>(null);
+  const [enquiryModal, setEnquiryModal] = useState<EnquiryRow | null>(null);
+  const [enquiryModalNotes, setEnquiryModalNotes] = useState("");
+  const [enquiryModalStatus, setEnquiryModalStatus] = useState<EnquiryStatus>("new");
+  const [enquiryModalSaving, setEnquiryModalSaving] = useState(false);
+
+  type ViewingRow = {
+    id: string;
+    propertyId: string;
+    agencyId: string;
+    applicantUserId: string | null;
+    applicantName: string;
+    applicantEmail: string;
+    applicantPhone: string | null;
+    scheduledAt: number | null;
+    status: ViewingStatus;
+    notes: string | null;
+    source: string;
+  };
+  const [viewings, setViewings] = useState<ViewingRow[]>([]);
+  const [loadingViewings, setLoadingViewings] = useState(false);
+  const [viewingUpdatingId, setViewingUpdatingId] = useState<string | null>(null);
+  const [bookViewingOpen, setBookViewingOpen] = useState(false);
+  const [bookViewingSubmitting, setBookViewingSubmitting] = useState(false);
+  const [proceedPromptViewingId, setProceedPromptViewingId] = useState<string | null>(null);
+  const [createAppViewingId, setCreateAppViewingId] = useState<string | null>(null);
+  const [bookViewingForm, setBookViewingForm] = useState({
+    enquiryId: "",
+    applicantName: "",
+    applicantEmail: "",
+    applicantPhone: "",
+    scheduledAt: "",
+    notes: "",
+  });
+  const [pipelineItems, setPipelineItems] = useState<{ id: string; applicantName: string; stage: string }[]>([]);
+  const [loadingPipeline, setLoadingPipeline] = useState(false);
+  type OfferRow = { id: string; propertyId: string; propertyDisplayLabel: string; agencyId: string; applicantId: string | null; applicantName: string | null; applicantEmail: string | null; amount: number; status: OfferStatus; source: string; updatedAt: string | null };
+  const [offers, setOffers] = useState<OfferRow[]>([]);
+  const [loadingOffers, setLoadingOffers] = useState(false);
+  const [createOfferOpen, setCreateOfferOpen] = useState(false);
+  const [hasTenancyForProperty, setHasTenancyForProperty] = useState(false);
+  const [applicantMatches, setApplicantMatches] = useState<{
+    applicantId: string;
+    applicantName: string;
+    applicantEmail: string;
+    applicantPhone: string | null;
+    score: number;
+    reasons: string[];
+    warnings: string[];
+    matched: boolean;
+  }[]>([]);
+  const [loadingApplicantMatches, setLoadingApplicantMatches] = useState(false);
 
   const agencyId = effectiveAgencyId;
   const router = useRouter();
@@ -135,9 +230,10 @@ export default function AdminPropertyDetailPage() {
       setNotFound(true);
       return;
     }
-    if (queryAgencyId || queryLandlordUid) {
+    // Prefer API when we have agencyId (from URL or session); same canonical path as list.
+    if ((queryAgencyId || queryLandlordUid) && effectiveAgencyId) {
       const q = new URLSearchParams();
-      q.set("agencyId", effectiveAgencyId ?? "");
+      q.set("agencyId", effectiveAgencyId);
       if (queryLandlordUid) q.set("landlordUid", queryLandlordUid);
       fetch(`/api/admin/properties/${propertyId}?${q.toString()}`, { credentials: "include" })
         .then((res) => {
@@ -152,21 +248,25 @@ export default function AdminPropertyDetailPage() {
           }
           return res.json();
         })
-        .then((data: { id: string; displayAddress: string; postcode: string; type: string; bedrooms: number; bathrooms: number; rentPcm: number | null; status: string; archived: boolean; createdAtMs: number | null; updatedAtMs: number | null; createdByUid: string } | null) => {
+        .then((data: { id: string; displayAddress?: unknown; postcode?: string; type?: string; bedrooms?: number; bathrooms?: number; rentPcm?: unknown; status?: string; archived?: boolean; createdAtMs?: number | null; updatedAtMs?: number | null; createdByUid?: string } | null) => {
           if (!data) return;
+          const displayAddr =
+            typeof data.displayAddress === "string" && data.displayAddress.trim()
+              ? data.displayAddress.trim()
+              : "Untitled property";
           const p: Property = {
             id: data.id,
-            displayAddress: data.displayAddress ?? "",
-            postcode: data.postcode ?? "",
-            type: (data.type as PropertyType) ?? "House",
+            displayAddress: displayAddr,
+            postcode: typeof data.postcode === "string" ? data.postcode : "",
+            type: ((typeof data.type === "string" ? data.type : "House") ?? "House") as PropertyType,
             bedrooms: Number(data.bedrooms) ?? 0,
             bathrooms: Number(data.bathrooms) ?? 0,
-            rentPcm: data.rentPcm != null ? Number(data.rentPcm) : null,
-            status: (data.status as PropertyStatus) ?? "Available",
+            rentPcm: safeRentPcm(data.rentPcm),
+            status: ((typeof data.status === "string" ? data.status : "Available") ?? "Available") as PropertyStatus,
             archived: data.archived === true,
             createdAt: data.createdAtMs ?? null,
             updatedAt: data.updatedAtMs ?? null,
-            createdByUid: data.createdByUid ?? "",
+            createdByUid: typeof data.createdByUid === "string" ? data.createdByUid : "",
           };
           setProperty(p);
           setEditForm({
@@ -190,6 +290,7 @@ export default function AdminPropertyDetailPage() {
       if (!effectiveAgencyId && sessionAgencyId) setNotFound(true);
       return;
     }
+    // Canonical path: agencies/{agencyId}/properties/{propertyId}; propertyId = Firestore doc id.
     const ref = doc(db, propertiesCol(effectiveAgencyId), propertyId);
     getDoc(ref).then((snap) => {
       setLoading(false);
@@ -197,20 +298,20 @@ export default function AdminPropertyDetailPage() {
         setNotFound(true);
         return;
       }
-      const data = snap.data()!;
+      const data = snap.data() as Record<string, unknown>;
       const p: Property = {
         id: snap.id,
-        displayAddress: data.displayAddress ?? "",
-        postcode: data.postcode ?? "",
-        type: (data.type as PropertyType) ?? "House",
+        displayAddress: normalizedDisplayAddress(data, snap.id),
+        postcode: typeof data.postcode === "string" ? data.postcode : "",
+        type: (typeof data.type === "string" ? data.type : "House") as PropertyType,
         bedrooms: Number(data.bedrooms) ?? 0,
         bathrooms: Number(data.bathrooms) ?? 0,
-        rentPcm: data.rentPcm != null ? Number(data.rentPcm) : null,
-        status: (data.status as PropertyStatus) ?? "Available",
+        rentPcm: safeRentPcm(data.rentPcm),
+        status: (typeof data.status === "string" ? data.status : "Available") as PropertyStatus,
         archived: data.archived === true,
         createdAt: data.createdAt,
         updatedAt: data.updatedAt,
-        createdByUid: data.createdByUid ?? "",
+        createdByUid: typeof data.createdByUid === "string" ? data.createdByUid : "",
       };
       setProperty(p);
       setEditForm({
@@ -235,7 +336,12 @@ export default function AdminPropertyDetailPage() {
     fetch(`/api/admin/properties/${propertyId}/assignments${q}`, { credentials: "include" })
       .then((res) => (res.ok ? res.json() : []))
       .then((data: AssignmentRow[]) => setAssignments(Array.isArray(data) ? data : []))
-      .catch(() => setAssignments([]))
+      .catch((err) => {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[PropertyDetail] failed to load landlord assignments", err);
+        }
+        setAssignments([]);
+      })
       .finally(() => setLoadingAssignments(false));
   }, [propertyId, effectiveAgencyId, queryLandlordUid]);
 
@@ -243,6 +349,270 @@ export default function AdminPropertyDetailPage() {
     if (!propertyId) return;
     fetchAssignments();
   }, [propertyId, fetchAssignments]);
+
+  useEffect(() => {
+    if (!propertyId || !effectiveAgencyId) {
+      setEnquiries([]);
+      return;
+    }
+    setLoadingEnquiries(true);
+    const q = `?agencyId=${encodeURIComponent(effectiveAgencyId)}${queryLandlordUid ? `&landlordUid=${encodeURIComponent(queryLandlordUid)}` : ""}`;
+    fetch(`/api/admin/properties/${propertyId}/enquiries${q}`, { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: EnquiryRow[]) => setEnquiries(Array.isArray(data) ? data : []))
+      .catch(() => setEnquiries([]))
+      .finally(() => setLoadingEnquiries(false));
+  }, [propertyId, effectiveAgencyId, queryLandlordUid]);
+
+  const refetchEnquiries = useCallback(() => {
+    if (!propertyId || !effectiveAgencyId) return;
+    const q = `?agencyId=${encodeURIComponent(effectiveAgencyId)}${queryLandlordUid ? `&landlordUid=${encodeURIComponent(queryLandlordUid)}` : ""}`;
+    fetch(`/api/admin/properties/${propertyId}/enquiries${q}`, { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: EnquiryRow[]) => setEnquiries(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [propertyId, effectiveAgencyId, queryLandlordUid]);
+
+  const handleEnquiryStatusChange = useCallback(
+    (enquiryId: string, newStatus: EnquiryStatus) => {
+      if (!effectiveAgencyId) return;
+      setEnquiryUpdatingId(enquiryId);
+      fetch(`/api/admin/enquiries/${enquiryId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ agencyId: effectiveAgencyId, status: newStatus }),
+      })
+        .then((res) => {
+          if (res.ok) refetchEnquiries();
+          else setToast("Failed to update status");
+        })
+        .catch(() => setToast("Failed to update status"))
+        .finally(() => setEnquiryUpdatingId(null));
+    },
+    [effectiveAgencyId, refetchEnquiries]
+  );
+
+  const handleEnquiryModalSave = useCallback(() => {
+    const row = enquiryModal;
+    if (!row || !effectiveAgencyId) return;
+    setEnquiryModalSaving(true);
+    fetch(`/api/admin/enquiries/${row.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        agencyId: effectiveAgencyId,
+        status: enquiryModalStatus,
+        internalNotes: enquiryModalNotes.trim() || null,
+      }),
+    })
+      .then((res) => {
+        if (res.ok) {
+          refetchEnquiries();
+          setEnquiryModal(null);
+          setToast("Enquiry updated");
+        } else {
+          setToast("Failed to update");
+        }
+      })
+      .catch(() => setToast("Failed to update"))
+      .finally(() => setEnquiryModalSaving(false));
+  }, [enquiryModal, enquiryModalNotes, enquiryModalStatus, effectiveAgencyId, refetchEnquiries]);
+
+  useEffect(() => {
+    if (!propertyId || !effectiveAgencyId) {
+      setViewings([]);
+      return;
+    }
+    setLoadingViewings(true);
+    fetch(
+      `/api/admin/viewings?agencyId=${encodeURIComponent(effectiveAgencyId)}&propertyId=${encodeURIComponent(propertyId)}&limit=50`,
+      { credentials: "include" }
+    )
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: ViewingRow[]) => setViewings(Array.isArray(data) ? data : []))
+      .catch(() => setViewings([]))
+      .finally(() => setLoadingViewings(false));
+  }, [propertyId, effectiveAgencyId]);
+
+  const refetchViewings = useCallback(() => {
+    if (!propertyId || !effectiveAgencyId) return;
+    fetch(
+      `/api/admin/viewings?agencyId=${encodeURIComponent(effectiveAgencyId)}&propertyId=${encodeURIComponent(propertyId)}&limit=50`,
+      { credentials: "include" }
+    )
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: ViewingRow[]) => setViewings(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [propertyId, effectiveAgencyId]);
+
+  useEffect(() => {
+    if (!effectiveAgencyId || !propertyId) {
+      setPipelineItems([]);
+      return;
+    }
+    setLoadingPipeline(true);
+    fetch(
+      `/api/admin/application-pipeline?agencyId=${encodeURIComponent(effectiveAgencyId)}&propertyId=${encodeURIComponent(propertyId)}&limit=20`,
+      { credentials: "include" }
+    )
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: { id: string; applicantName?: string; stage?: string }[]) =>
+        setPipelineItems(
+          Array.isArray(data)
+            ? data.map((r) => ({
+                id: r.id,
+                applicantName: r.applicantName ?? "",
+                stage: r.stage ?? "",
+              }))
+            : []
+        )
+      )
+      .catch(() => setPipelineItems([]))
+      .finally(() => setLoadingPipeline(false));
+  }, [effectiveAgencyId, propertyId]);
+
+  const refetchPipeline = useCallback(() => {
+    if (!effectiveAgencyId || !propertyId) return;
+    fetch(
+      `/api/admin/application-pipeline?agencyId=${encodeURIComponent(effectiveAgencyId)}&propertyId=${encodeURIComponent(propertyId)}&limit=20`,
+      { credentials: "include" }
+    )
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: { id: string; applicantName?: string; stage?: string }[]) =>
+        setPipelineItems(
+          Array.isArray(data)
+            ? data.map((r) => ({
+                id: r.id,
+                applicantName: r.applicantName ?? "",
+                stage: r.stage ?? "",
+              }))
+            : []
+        )
+      )
+      .catch(() => {});
+  }, [effectiveAgencyId, propertyId]);
+
+  useEffect(() => {
+    if (!effectiveAgencyId || !propertyId) {
+      setOffers([]);
+      return;
+    }
+    setLoadingOffers(true);
+    fetch(
+      `/api/admin/offers?agencyId=${encodeURIComponent(effectiveAgencyId)}&propertyId=${encodeURIComponent(propertyId)}`,
+      { credentials: "include" }
+    )
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: OfferRow[]) => setOffers(Array.isArray(data) ? data : []))
+      .catch(() => setOffers([]))
+      .finally(() => setLoadingOffers(false));
+  }, [effectiveAgencyId, propertyId]);
+
+  const refetchOffers = useCallback(() => {
+    if (!effectiveAgencyId || !propertyId) return;
+    fetch(
+      `/api/admin/offers?agencyId=${encodeURIComponent(effectiveAgencyId)}&propertyId=${encodeURIComponent(propertyId)}`,
+      { credentials: "include" }
+    )
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: OfferRow[]) => setOffers(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [effectiveAgencyId, propertyId]);
+
+  useEffect(() => {
+    if (!effectiveAgencyId || !propertyId) {
+      setHasTenancyForProperty(false);
+      setApplicantMatches([]);
+      return;
+    }
+    // TODO(legacy-tenancy-pass): switch to a property-scoped tenancy read endpoint
+    // (e.g. /api/admin/properties/[propertyId]/tenancies) to avoid fetching full tenancy list.
+    fetch(`/api/admin/tenancies?agencyId=${encodeURIComponent(effectiveAgencyId)}`, { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((list: { propertyId?: string }[]) => {
+        setHasTenancyForProperty(Array.isArray(list) && list.some((t) => t.propertyId === propertyId));
+      })
+      .catch(() => setHasTenancyForProperty(false));
+
+    const params = new URLSearchParams();
+    params.set("agencyId", effectiveAgencyId);
+    params.set("limit", "20");
+    setLoadingApplicantMatches(true);
+    fetch(
+      `/api/admin/properties/${encodeURIComponent(propertyId)}/matches?${params.toString()}`,
+      { credentials: "include" }
+    )
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => setApplicantMatches(Array.isArray(data) ? data : []))
+      .catch(() => setApplicantMatches([]))
+      .finally(() => setLoadingApplicantMatches(false));
+  }, [effectiveAgencyId, propertyId]);
+
+  const handleViewingStatusChange = useCallback(
+    (viewingId: string, newStatus: ViewingStatus) => {
+      if (!effectiveAgencyId) return;
+      setViewingUpdatingId(viewingId);
+      fetch(`/api/admin/viewings/${viewingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ agencyId: effectiveAgencyId, status: newStatus }),
+      })
+        .then((res) => {
+          if (res.ok) refetchViewings();
+          else setToast("Failed to update status");
+        })
+        .catch(() => setToast("Failed to update status"))
+        .finally(() => setViewingUpdatingId(null));
+    },
+    [effectiveAgencyId, refetchViewings]
+  );
+
+  const handleBookViewingSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!effectiveAgencyId || !propertyId) return;
+      const scheduledAt = bookViewingForm.scheduledAt.trim();
+      if (!scheduledAt) {
+        setToast("Date & time required");
+        return;
+      }
+      const payload: Record<string, unknown> = {
+        agencyId: effectiveAgencyId,
+        propertyId,
+        scheduledAt: new Date(scheduledAt).getTime(),
+        applicantName: bookViewingForm.applicantName.trim() || undefined,
+        applicantEmail: bookViewingForm.applicantEmail.trim() || undefined,
+        applicantPhone: bookViewingForm.applicantPhone.trim() || undefined,
+        notes: bookViewingForm.notes.trim() || undefined,
+      };
+      if (bookViewingForm.enquiryId) {
+        payload.enquiryId = bookViewingForm.enquiryId;
+      }
+      setBookViewingSubmitting(true);
+      fetch("/api/admin/viewings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      })
+        .then((res) => {
+          if (res.ok) {
+            refetchViewings();
+            setBookViewingOpen(false);
+            setBookViewingForm({ enquiryId: "", applicantName: "", applicantEmail: "", applicantPhone: "", scheduledAt: "", notes: "" });
+            setToast("Viewing booked");
+          } else {
+            return res.json().then((d: { error?: string }) => setToast(d?.error ?? "Failed to book"));
+          }
+        })
+        .catch(() => setToast("Failed to book"))
+        .finally(() => setBookViewingSubmitting(false));
+    },
+    [effectiveAgencyId, propertyId, bookViewingForm, refetchViewings]
+  );
 
   useEffect(() => {
     if (!profile || !isAdminRole) return;
@@ -385,12 +755,12 @@ export default function AdminPropertyDetailPage() {
       <>
         <PageHeader title="Property" />
         <p className="text-sm text-zinc-500">Property not found.</p>
-        <Link
+        <HistoryBackLink
           href="/admin/properties"
           className="mt-2 inline-block text-sm font-medium text-zinc-600 hover:underline"
         >
           ← Back to properties
-        </Link>
+        </HistoryBackLink>
       </>
     );
   }
@@ -400,12 +770,12 @@ export default function AdminPropertyDetailPage() {
       <>
         <PageHeader title="Property" />
         <p className="text-sm text-zinc-500">You don&apos;t have access to this property.</p>
-        <Link
+        <HistoryBackLink
           href="/admin/landlords"
           className="mt-2 inline-block text-sm font-medium text-zinc-600 hover:underline"
         >
           ← Back to Landlords
-        </Link>
+        </HistoryBackLink>
       </>
     );
   }
@@ -440,6 +810,71 @@ export default function AdminPropertyDetailPage() {
           router.push("/admin/tickets");
         }}
       />
+
+      {enquiryModal && !isReadOnlyCrossAgency && (
+        <div
+          className="fixed inset-0 z-10 flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="enquiry-modal-title"
+        >
+          <Card className="w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <h2 id="enquiry-modal-title" className="text-lg font-semibold text-zinc-900">
+              Enquiry: {enquiryModal.applicantName || "Applicant"}
+            </h2>
+            <p className="text-sm text-zinc-500 mt-0.5">{enquiryModal.applicantEmail}</p>
+            <div className="mt-4 space-y-4">
+              <div>
+                <label htmlFor="enquiry-modal-status" className="block text-sm font-medium text-zinc-700">
+                  Status
+                </label>
+                <select
+                  id="enquiry-modal-status"
+                  value={enquiryModalStatus}
+                  onChange={(e) => setEnquiryModalStatus(e.target.value as EnquiryStatus)}
+                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
+                >
+                  {ENQUIRY_STATUSES.map((s) => (
+                    <option key={s} value={s}>
+                      {ENQUIRY_STATUS_LABELS[s]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="enquiry-modal-notes" className="block text-sm font-medium text-zinc-700">
+                  Internal notes
+                </label>
+                <textarea
+                  id="enquiry-modal-notes"
+                  rows={4}
+                  value={enquiryModalNotes}
+                  onChange={(e) => setEnquiryModalNotes(e.target.value)}
+                  placeholder="Private notes (not visible to applicant)"
+                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end mt-4">
+              <button
+                type="button"
+                onClick={() => setEnquiryModal(null)}
+                className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleEnquiryModalSave}
+                disabled={enquiryModalSaving}
+                className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+              >
+                {enquiryModalSaving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </Card>
+        </div>
+      )}
 
       <PageHeader
         title={property.displayAddress}
@@ -481,12 +916,12 @@ export default function AdminPropertyDetailPage() {
                 </button>
               </>
             )}
-            <Link
+            <HistoryBackLink
               href="/admin/properties"
               className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
             >
               ← Back
-            </Link>
+            </HistoryBackLink>
           </div>
         }
       />
@@ -495,6 +930,126 @@ export default function AdminPropertyDetailPage() {
         <div className="mt-4 rounded-md bg-amber-50 border border-amber-200 px-4 py-2 text-sm text-amber-800">
           Read-only (cross-agency). You can view this property but cannot edit or change landlord assignments.
         </div>
+      )}
+
+      {!editing && propertyId && (
+        <>
+          <AdminNextActionCard
+            action={getNextAction({
+              enquiry: enquiries.length > 0,
+              viewing: viewings.length > 0,
+              viewingCompleted: viewings.some((v) => v.status === "completed"),
+              pipelineStage: getFurthestPipelineStage(pipelineItems.map((p) => p.stage)),
+              offer: offers.length > 0,
+              offerAccepted: offers.some((o) => o.status === "accepted"),
+              tenancy: hasTenancyForProperty,
+            })}
+          />
+          <AdminProgressJourney
+            currentStage={getJourneyStageFromData({
+              hasViewing: viewings.length > 0,
+              hasPipelineEntry: pipelineItems.length > 0,
+              hasOffer: offers.length > 0,
+              hasAcceptedOffer: offers.some((o) => o.status === "accepted"),
+              hasTenancy: hasTenancyForProperty,
+            })}
+            className="mb-6"
+          />
+        </>
+      )}
+
+      {!editing && (
+        <Card className="p-6 mb-6">
+          <h2 className="text-base font-medium text-zinc-900 mb-0.5">Recommended applicants</h2>
+          <p className="text-xs text-zinc-500 mb-3">
+            Rule-based matches using applicants&apos; preferences (budget, bedrooms, areas, type).
+          </p>
+          {loadingApplicantMatches ? (
+            <p className="text-sm text-zinc-500">Loading recommended applicants…</p>
+          ) : applicantMatches.filter((m) => m.matched).length === 0 ? (
+            <p className="text-sm text-zinc-500">
+              No strong applicant matches yet. As more applicant preferences are added, matches will appear here.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-200">
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Applicant</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Score</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Reasons</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Warnings</th>
+                    <th className="text-left py-2 font-medium text-zinc-700">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {applicantMatches
+                    .filter((m) => m.matched)
+                    .slice(0, 10)
+                    .map((m) => (
+                      <tr key={m.applicantId} className="border-b border-zinc-100 align-top">
+                        <td className="py-2 pr-4 text-zinc-900">
+                          <Link
+                            href={`/admin/applicants/${m.applicantId}`}
+                            className="text-zinc-700 hover:underline"
+                          >
+                            {m.applicantName || "—"}
+                          </Link>
+                          <span className="block text-xs text-zinc-500">
+                            {m.applicantEmail || "—"}
+                            {m.applicantPhone ? ` · ${m.applicantPhone}` : ""}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-4">
+                          <AdminMatchScoreBadge score={m.score} />
+                        </td>
+                        <td className="py-2 pr-4 text-zinc-600">
+                          {(m.reasons ?? []).slice(0, 3).join(" · ") || "—"}
+                        </td>
+                        <td className="py-2 pr-4 text-zinc-600">
+                          {(m.warnings ?? []).length > 0 ? (
+                            <span className="text-amber-800">
+                              ⚠ {m.warnings.slice(0, 2).join(" · ")}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="py-2">
+                          <div className="flex flex-wrap gap-2">
+                            <Link
+                              href={`/admin/applicants/${m.applicantId}`}
+                              className="text-zinc-600 hover:underline text-xs"
+                            >
+                              View applicant
+                            </Link>
+                            {!isReadOnlyCrossAgency && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBookViewingForm((prev) => ({
+                                    ...prev,
+                                    enquiryId: "",
+                                    applicantName: m.applicantName || "",
+                                    applicantEmail: m.applicantEmail || "",
+                                    applicantPhone: m.applicantPhone || "",
+                                  }));
+                                  setBookViewingOpen(true);
+                                }}
+                                className="text-zinc-600 hover:underline text-xs"
+                              >
+                                Book viewing
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
       )}
 
       {!editing && (
@@ -514,7 +1069,7 @@ export default function AdminPropertyDetailPage() {
             <dd>{property.bathrooms}</dd>
             <dt className="text-sm text-zinc-500">Rent pcm</dt>
             <dd>
-              {property.rentPcm != null ? `£${property.rentPcm}` : "—"}
+              {typeof property.rentPcm === "number" && Number.isFinite(property.rentPcm) ? `£${property.rentPcm}` : "—"}
             </dd>
             <dt className="text-sm text-zinc-500">Status</dt>
             <dd>{property.status}</dd>
@@ -538,14 +1093,23 @@ export default function AdminPropertyDetailPage() {
               {assignments.map((a) => {
                 const rowPrimary = a.primaryAgencyId ?? a.agencyId;
                 const canUnassign = !isReadOnlyCrossAgency && (isSuperAdmin || (!!agencyId && rowPrimary === agencyId));
+                const resolvedExternalId = (a.externalId && a.externalId.trim()) || (a.landlordExternalId && a.landlordExternalId.trim()) || null;
+                const title =
+                  (a.displayName && a.displayName.trim()) ||
+                  (resolvedExternalId ? `Legacy landlord ${resolvedExternalId}` : a.email || a.landlordUid);
                 return (
                   <li
                     key={a.id}
                     className="flex items-center justify-between rounded border border-zinc-200 bg-zinc-50/50 px-3 py-2"
                   >
-                    <span className="text-sm text-zinc-900">
-                      {a.displayName ? `${a.displayName}${a.email ? ` (${a.email})` : ""}` : a.email || a.landlordUid}
-                    </span>
+                    <div className="text-sm text-zinc-900">
+                      <p className="font-medium">{title}</p>
+                      <p className="text-xs text-zinc-600">
+                        {a.email ? a.email : "No email"}{" · "}
+                        {a.phone && a.phone.trim() ? a.phone : "No phone"}
+                        {resolvedExternalId ? ` · External ID: ${resolvedExternalId}` : ""}
+                      </p>
+                    </div>
                     <button
                       type="button"
                       onClick={() => handleUnassign(a)}
@@ -609,6 +1173,535 @@ export default function AdminPropertyDetailPage() {
             </p>
           )}
         </Card>
+      )}
+
+      {!editing && (
+        <Card className="p-6 mt-6">
+          <h2 className="text-lg font-medium text-zinc-900 mb-0.5">1. Enquiries</h2>
+          <p className="text-xs text-zinc-500 mb-3">Leads from the listing. Update status and add notes; convert to applicant when ready.</p>
+          {loadingEnquiries ? (
+            <p className="text-sm text-zinc-500">Loading…</p>
+          ) : enquiries.length === 0 ? (
+            <p className="text-sm text-zinc-500">No enquiries for this property yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-200">
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Name</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Email</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Phone</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Move-in</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">When</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Status</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Notes</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Summary</th>
+                    <th className="text-left py-2 font-medium text-zinc-700">Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {enquiries.map((e) => {
+                    const parts: string[] = [];
+                    if (e.hasPets === true) parts.push(e.petDetails ? `Pets: ${e.petDetails}` : "Pets");
+                    if (e.hasChildren === true) parts.push("Children");
+                    if (e.employmentStatus) parts.push(e.employmentStatus.replace("_", " "));
+                    if (e.smoker === true) parts.push("Smoker");
+                    if (e.intendedOccupants != null) parts.push(`${e.intendedOccupants} occupants`);
+                    const summary = parts.length ? parts.join(" · ") : "—";
+                    const isUpdating = enquiryUpdatingId === e.id;
+                    return (
+                      <tr key={e.id} className="border-b border-zinc-100">
+                        <td className="py-2 pr-4 text-zinc-900">{e.applicantName || "—"}</td>
+                        <td className="py-2 pr-4 text-zinc-600">{e.applicantEmail || "—"}</td>
+                        <td className="py-2 pr-4 text-zinc-600">{e.applicantPhone || "—"}</td>
+                        <td className="py-2 pr-4 text-zinc-600">
+                          {e.moveInDate ? new Date(e.moveInDate).toLocaleDateString() : "—"}
+                        </td>
+                        <td className="py-2 pr-4 text-zinc-600">
+                          {typeof e.createdAt === "number"
+                            ? new Date(e.createdAt).toLocaleString()
+                            : formatPropertyDate(e.createdAt)}
+                        </td>
+                        <td className="py-2 pr-4">
+                          {!isReadOnlyCrossAgency ? (
+                            <select
+                              value={e.status}
+                              onChange={(ev) => handleEnquiryStatusChange(e.id, ev.target.value as EnquiryStatus)}
+                              disabled={isUpdating}
+                              className="rounded border border-zinc-300 px-2 py-1 text-xs font-medium bg-zinc-50 text-zinc-900 disabled:opacity-50"
+                            >
+                              {ENQUIRY_STATUSES.map((s) => (
+                                <option key={s} value={s}>
+                                  {ENQUIRY_STATUS_LABELS[s]}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <AdminStatusBadge variant={getStatusBadgeVariant(e.status, "enquiry")}>
+                              {ENQUIRY_STATUS_LABELS[e.status] ?? e.status}
+                            </AdminStatusBadge>
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 text-zinc-600 max-w-[140px] truncate" title={e.internalNotes ?? undefined}>
+                          {e.internalNotes ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEnquiryModal(e);
+                                setEnquiryModalNotes(e.internalNotes ?? "");
+                                setEnquiryModalStatus(e.status);
+                              }}
+                              className="text-left text-zinc-600 hover:underline truncate block max-w-[140px]"
+                            >
+                              {e.internalNotes.slice(0, 40)}{e.internalNotes.length > 40 ? "…" : ""}
+                            </button>
+                          ) : (
+                            !isReadOnlyCrossAgency ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEnquiryModal(e);
+                                  setEnquiryModalNotes("");
+                                  setEnquiryModalStatus(e.status);
+                                }}
+                                className="text-zinc-400 hover:text-zinc-600 text-xs"
+                              >
+                                Add notes
+                              </button>
+                            ) : (
+                              "—"
+                            )
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 text-zinc-600 max-w-[180px] truncate" title={summary}>
+                          {summary}
+                        </td>
+                        <td className="py-2 text-zinc-600 max-w-xs truncate" title={e.message}>
+                          {e.message || "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {!editing && (
+        <Card className="p-6 mt-6">
+          <h2 className="text-lg font-medium text-zinc-900 mb-0.5 flex items-center justify-between gap-2">
+            <span>2. Viewings</span>
+            {!isReadOnlyCrossAgency && (
+              <button
+                type="button"
+                onClick={() => setBookViewingOpen(true)}
+                className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-800"
+              >
+                Book viewing
+              </button>
+            )}
+          </h2>
+          <p className="text-xs text-zinc-500 mb-3">Scheduled viewings. After completion, send proceed prompt or create application.</p>
+          {loadingViewings ? (
+            <p className="text-sm text-zinc-500">Loading…</p>
+          ) : viewings.length === 0 ? (
+            <div className="space-y-3">
+              <p className="text-sm text-zinc-500">No viewings for this property yet.</p>
+              {!isReadOnlyCrossAgency && (
+                <button
+                  type="button"
+                  onClick={() => setBookViewingOpen(true)}
+                  className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
+                >
+                  Book viewing
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-200">
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Applicant</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Date / time</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Status</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Notes</th>
+                    {!isReadOnlyCrossAgency && (
+                      <th className="text-left py-2 font-medium text-zinc-700">Actions</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {viewings.map((v) => {
+                    const isUpdating = viewingUpdatingId === v.id;
+                    const isCompleted = v.status === "completed";
+                    const sendingProceed = proceedPromptViewingId === v.id;
+                    const creatingApp = createAppViewingId === v.id;
+                    return (
+                      <tr key={v.id} className="border-b border-zinc-100">
+                        <td className="py-2 pr-4 text-zinc-900">
+                          {v.applicantName || "—"}
+                          {v.applicantEmail && (
+                            <span className="block text-xs text-zinc-500">{v.applicantEmail}</span>
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 text-zinc-600">
+                          {v.scheduledAt != null ? new Date(v.scheduledAt).toLocaleString() : "—"}
+                        </td>
+                        <td className="py-2 pr-4">
+                          {!isReadOnlyCrossAgency ? (
+                            <select
+                              value={v.status}
+                              onChange={(ev) => handleViewingStatusChange(v.id, ev.target.value as ViewingStatus)}
+                              disabled={isUpdating}
+                              className="rounded border border-zinc-300 px-2 py-1 text-xs font-medium bg-zinc-50 text-zinc-900 disabled:opacity-50"
+                            >
+                              {VIEWING_STATUSES.map((s) => (
+                                <option key={s} value={s}>
+                                  {VIEWING_STATUS_LABELS[s]}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <AdminStatusBadge variant={getStatusBadgeVariant(v.status, "viewing")}>
+                              {VIEWING_STATUS_LABELS[v.status] ?? v.status}
+                            </AdminStatusBadge>
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 text-zinc-600 max-w-[180px] truncate" title={v.notes ?? undefined}>
+                          {v.notes ? `${v.notes.slice(0, 50)}${v.notes.length > 50 ? "…" : ""}` : "—"}
+                        </td>
+                        {!isReadOnlyCrossAgency && (
+                          <td className="py-2">
+                            {isCompleted && (
+                              <div className="flex flex-wrap gap-1 items-center">
+                                {v.applicantUserId ? (
+                                  <button
+                                    type="button"
+                                    disabled={sendingProceed}
+                                    onClick={() => {
+                                      setProceedPromptViewingId(v.id);
+                                      fetch(`/api/admin/viewings/${v.id}/send-proceed-prompt`, {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        credentials: "include",
+                                        body: JSON.stringify({ agencyId: effectiveAgencyId }),
+                                      })
+                                        .then((res) => {
+                                          if (res.ok) {
+                                            setToast("Proceed prompt sent");
+                                            refetchPipeline();
+                                          } else {
+                                            res.json().then((d: { error?: string }) => setToast(d?.error ?? "Failed"));
+                                          }
+                                        })
+                                        .catch(() => setToast("Failed"))
+                                        .finally(() => setProceedPromptViewingId(null));
+                                    }}
+                                    className="rounded border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+                                  >
+                                    {sendingProceed ? "Sending…" : "Send proceed prompt"}
+                                  </button>
+                                ) : (
+                                  <span
+                                    className="rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-500 bg-zinc-50 cursor-not-allowed"
+                                    title="Proceed prompt is only available for applicants with a portal account."
+                                  >
+                                    Send proceed prompt
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={creatingApp}
+                                  onClick={() => {
+                                    setCreateAppViewingId(v.id);
+                                    fetch(`/api/admin/viewings/${v.id}/create-application`, {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      credentials: "include",
+                                      body: JSON.stringify({ agencyId: effectiveAgencyId }),
+                                    })
+                                      .then(async (res) => {
+                                        const data = await res.json().catch(() => ({}));
+                                        if (res.ok && data.applicantId) {
+                                          setToast(data.linked ? "Linked to existing applicant" : "Application created");
+                                          refetchViewings();
+                                          refetchPipeline();
+                                        } else {
+                                          setToast(data?.error ?? "Failed");
+                                        }
+                                      })
+                                      .catch(() => setToast("Failed"))
+                                      .finally(() => setCreateAppViewingId(null));
+                                  }}
+                                  className="rounded border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+                                >
+                                  {creatingApp ? "Creating…" : "Create application"}
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {!editing && (pipelineItems.length > 0 || loadingPipeline) && propertyId && effectiveAgencyId && (
+        <Card className="p-6 mt-6">
+          <h2 className="text-base font-medium text-zinc-900 mb-0.5 flex items-center justify-between gap-2">
+            <span>3. Application pipeline</span>
+            <Link
+              href={`/admin/application-pipeline?agencyId=${encodeURIComponent(effectiveAgencyId)}&propertyId=${encodeURIComponent(propertyId)}`}
+              className="text-sm font-medium text-zinc-600 hover:text-zinc-900"
+            >
+              View all →
+            </Link>
+          </h2>
+          <p className="text-xs text-zinc-500 mb-3">Applicant progress for this property. Move stages in the pipeline or complete via action queue.</p>
+          {loadingPipeline ? (
+            <p className="text-sm text-zinc-500">Loading…</p>
+          ) : pipelineItems.length === 0 ? null : (
+            <ul className="text-sm text-zinc-700 space-y-1">
+              {pipelineItems.slice(0, 5).map((p) => (
+                <li key={p.id}>
+                  {p.applicantName || "—"} — {p.stage}
+                </li>
+              ))}
+              {pipelineItems.length > 5 && (
+                <li>
+                  <Link
+                    href={`/admin/application-pipeline?agencyId=${encodeURIComponent(effectiveAgencyId)}&propertyId=${encodeURIComponent(propertyId)}`}
+                    className="text-zinc-600 hover:underline"
+                  >
+                    +{pipelineItems.length - 5} more…
+                  </Link>
+                </li>
+              )}
+            </ul>
+          )}
+        </Card>
+      )}
+
+      {!editing && propertyId && effectiveAgencyId && (
+        <Card className="p-6 mt-6">
+          <h2 className="text-base font-medium text-zinc-900 mb-0.5 flex items-center justify-between gap-2">
+            <span>4. Offers</span>
+            {!isReadOnlyCrossAgency && (
+              <button
+                type="button"
+                onClick={() => setCreateOfferOpen(true)}
+                className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-800"
+              >
+                Create offer
+              </button>
+            )}
+          </h2>
+          <p className="text-xs text-zinc-500 mb-3">Offers for this property. When applicant accepts, the item appears in the action queue.</p>
+          {loadingOffers ? (
+            <p className="text-sm text-zinc-500">Loading…</p>
+          ) : offers.length === 0 ? (
+            <p className="text-sm text-zinc-500">No offers for this property yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-200">
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Applicant</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Amount</th>
+                    <th className="text-left py-2 pr-4 font-medium text-zinc-700">Status</th>
+                    <th className="text-left py-2 font-medium text-zinc-700">Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {offers.map((o) => (
+                    <tr key={o.id} className="border-b border-zinc-100">
+                      <td className="py-2 pr-4 text-zinc-900">
+                        {o.applicantId ? (
+                          <Link
+                            href={`/admin/applicants/${o.applicantId}`}
+                            className="text-zinc-700 hover:underline"
+                          >
+                            {o.applicantName || "—"}
+                          </Link>
+                        ) : (
+                          <span>{o.applicantName || "—"}</span>
+                        )}
+                        {o.applicantEmail && (
+                          <span className="block text-xs text-zinc-500">{o.applicantEmail}</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-4 text-zinc-900">£{typeof o.amount === "number" ? o.amount.toLocaleString() : "0"}</td>
+                      <td className="py-2 pr-4">
+                        <AdminStatusBadge variant={getStatusBadgeVariant(o.status, "offer")}>
+                          {OFFER_STATUS_LABELS[o.status] ?? o.status}
+                        </AdminStatusBadge>
+                      </td>
+                      <td className="py-2 text-zinc-600">
+                        {o.updatedAt ? new Date(o.updatedAt).toLocaleDateString() : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {createOfferOpen && property && effectiveAgencyId && !isReadOnlyCrossAgency && (
+        <AdminCreateOfferModal
+          open={createOfferOpen}
+          onClose={() => setCreateOfferOpen(false)}
+          agencyId={effectiveAgencyId}
+          initialProperty={{
+            agencyId: effectiveAgencyId,
+            propertyId: property.id,
+            displayAddress: property.displayAddress,
+          }}
+          onSuccess={() => {
+            setToast("Offer created");
+            refetchOffers();
+            setCreateOfferOpen(false);
+          }}
+        />
+      )}
+
+      {bookViewingOpen && !isReadOnlyCrossAgency && (
+        <div
+          className="fixed inset-0 z-10 flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="book-viewing-title"
+        >
+          <Card className="w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <h2 id="book-viewing-title" className="text-lg font-semibold text-zinc-900">
+              Book viewing
+            </h2>
+            <form onSubmit={handleBookViewingSubmit} className="mt-4 space-y-4">
+              {enquiries.length > 0 && (
+                <div>
+                  <label htmlFor="book-viewing-enquiry" className="block text-sm font-medium text-zinc-700">
+                    From enquiry (optional)
+                  </label>
+                  <select
+                    id="book-viewing-enquiry"
+                    value={bookViewingForm.enquiryId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setBookViewingForm((prev) => ({
+                        ...prev,
+                        enquiryId: id,
+                        ...(id ? (() => {
+                          const enq = enquiries.find((x) => x.id === id);
+                          return enq
+                            ? {
+                                applicantName: enq.applicantName ?? "",
+                                applicantEmail: enq.applicantEmail ?? "",
+                                applicantPhone: enq.applicantPhone ?? "",
+                              }
+                            : {};
+                        })() : {}),
+                      }));
+                    }}
+                    className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
+                  >
+                    <option value="">Manual booking</option>
+                    {enquiries.map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.applicantName || e.applicantEmail || e.id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label htmlFor="book-viewing-name" className="block text-sm font-medium text-zinc-700">
+                  Applicant name
+                </label>
+                <input
+                  id="book-viewing-name"
+                  type="text"
+                  value={bookViewingForm.applicantName}
+                  onChange={(e) => setBookViewingForm((prev) => ({ ...prev, applicantName: e.target.value }))}
+                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
+                />
+              </div>
+              <div>
+                <label htmlFor="book-viewing-email" className="block text-sm font-medium text-zinc-700">
+                  Applicant email
+                </label>
+                <input
+                  id="book-viewing-email"
+                  type="email"
+                  value={bookViewingForm.applicantEmail}
+                  onChange={(e) => setBookViewingForm((prev) => ({ ...prev, applicantEmail: e.target.value }))}
+                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
+                />
+              </div>
+              <div>
+                <label htmlFor="book-viewing-phone" className="block text-sm font-medium text-zinc-700">
+                  Applicant phone (optional)
+                </label>
+                <input
+                  id="book-viewing-phone"
+                  type="tel"
+                  value={bookViewingForm.applicantPhone}
+                  onChange={(e) => setBookViewingForm((prev) => ({ ...prev, applicantPhone: e.target.value }))}
+                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
+                />
+              </div>
+              <div>
+                <label htmlFor="book-viewing-datetime" className="block text-sm font-medium text-zinc-700">
+                  Date & time *
+                </label>
+                <input
+                  id="book-viewing-datetime"
+                  type="datetime-local"
+                  required
+                  value={bookViewingForm.scheduledAt}
+                  onChange={(e) => setBookViewingForm((prev) => ({ ...prev, scheduledAt: e.target.value }))}
+                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
+                />
+              </div>
+              <div>
+                <label htmlFor="book-viewing-notes" className="block text-sm font-medium text-zinc-700">
+                  Notes (optional)
+                </label>
+                <textarea
+                  id="book-viewing-notes"
+                  rows={2}
+                  value={bookViewingForm.notes}
+                  onChange={(e) => setBookViewingForm((prev) => ({ ...prev, notes: e.target.value }))}
+                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
+                />
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setBookViewingOpen(false)}
+                  className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={bookViewingSubmitting}
+                  className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  {bookViewingSubmitting ? "Booking…" : "Book viewing"}
+                </button>
+              </div>
+            </form>
+          </Card>
+        </div>
       )}
 
       {editing && (

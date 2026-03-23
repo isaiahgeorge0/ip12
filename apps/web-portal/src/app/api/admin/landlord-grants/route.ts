@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import {
   landlordAgencyGrantsCol,
@@ -10,21 +10,16 @@ import {
 import { canAdminViewLandlord } from "@/lib/landlordGrants";
 import { writeAuditLog } from "@/lib/audit/writeAuditLog";
 
-const ADMIN_ROLES = ["admin", "superAdmin"] as const;
-
-function isAdmin(role: string): boolean {
-  return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
-}
-
 /**
  * GET /api/admin/landlord-grants?landlordUid=...
  * Returns grant for the landlord. Allowed: superAdmin or admin with access (member OR grant).
  */
 export async function GET(request: NextRequest) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const { searchParams } = new URL(request.url);
   const landlordUid = searchParams.get("landlordUid")?.trim();
@@ -71,10 +66,11 @@ export async function GET(request: NextRequest) {
  * Body: { landlordUid: string, sharedWithAgencyIds: string[] }. Upserts grant. superAdmin only.
  */
 export async function POST(request: NextRequest) {
-  const session = await getServerSession();
-  if (!session || session.role !== "superAdmin") {
-    return NextResponse.json({ error: "Forbidden: superAdmin only" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["superAdmin"]);
+  if (role403) return role403;
 
   let body: { landlordUid?: string; sharedWithAgencyIds?: string[] };
   try {

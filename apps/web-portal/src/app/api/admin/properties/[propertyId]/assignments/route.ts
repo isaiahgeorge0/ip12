@@ -1,18 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/serverSession";
-import type { Role } from "@/lib/types/roles";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { propertyLandlordsCol, userDoc } from "@/lib/firestore/paths";
 import { FieldValue } from "firebase-admin/firestore";
 import { writePropertyLandlordAudit } from "@/lib/audit/propertyLandlordAudit";
 import { writeAuditLog } from "@/lib/audit/writeAuditLog";
 import { canAdminViewLandlord, isPropertyInLandlordInventory } from "@/lib/landlordGrants";
-
-const ADMIN_ROLES = ["admin", "superAdmin"] as const;
-
-function isAdmin(role: Role): role is (typeof ADMIN_ROLES)[number] {
-  return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
-}
 
 /** Deterministic join doc id: propertyLandlords/{joinId}. */
 function joinId(agencyId: string, propertyId: string, landlordUid: string): string {
@@ -42,10 +35,11 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ propertyId: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const { propertyId } = await params;
   if (!propertyId) {
@@ -94,6 +88,7 @@ export async function GET(
         landlordUid: d.landlordUid ?? "",
         agencyId: d.agencyId ?? "",
         propertyId: d.propertyId ?? "",
+        landlordExternalId: typeof d.landlordExternalId === "string" ? d.landlordExternalId : "",
         createdAt: d.createdAt,
         status,
       };
@@ -105,10 +100,21 @@ export async function GET(
       const userSnap = await db.doc(userDoc(r.landlordUid)).get();
       const u = userSnap.data();
       const primaryAgencyId = getLandlordPrimaryAgencyId(u);
+      const externalId =
+        typeof u?.externalId === "string" && u.externalId.trim()
+          ? u.externalId.trim()
+          : typeof (r as Record<string, unknown>).landlordExternalId === "string"
+            ? ((r as Record<string, unknown>).landlordExternalId as string).trim()
+            : "";
+      const phone =
+        typeof u?.phone === "string" && u.phone.trim() ? u.phone.trim() : "";
       return {
         ...r,
         email: typeof u?.email === "string" ? u.email : "",
         displayName: typeof u?.displayName === "string" ? u.displayName : "",
+        phone,
+        externalId,
+        userFound: userSnap.exists,
         primaryAgencyId,
       };
     })
@@ -125,10 +131,11 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ propertyId: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const { propertyId } = await params;
   if (!propertyId) {
@@ -214,19 +221,26 @@ export async function POST(
 
   // Rule: normal admin can only assign when session.agencyId === landlord.primaryAgencyId;
   // superAdmin can assign regardless. Audit records bypass with actorRole and context.
-  writePropertyLandlordAudit({
-    action: "PROPERTY_LANDLORD_ASSIGNED",
-    actorUid: session.uid,
-    actorRole: session.role,
-    actorAgencyId: session.agencyId,
-    landlordUid,
-    propertyId,
-    agencyId,
-    ...(session.role === "superAdmin" && {
-      landlordPrimaryAgencyId: landlordPrimaryAgencyId ?? undefined,
-      targetAgencyId: agencyId,
-    }),
-  });
+  // Audit is fire-and-forget: do not let audit failure surface as assignment failure.
+  try {
+    writePropertyLandlordAudit({
+      action: "PROPERTY_LANDLORD_ASSIGNED",
+      actorUid: session.uid,
+      actorRole: session.role,
+      actorAgencyId: session.agencyId,
+      landlordUid,
+      propertyId,
+      agencyId,
+      ...(session.role === "superAdmin" && {
+        landlordPrimaryAgencyId: landlordPrimaryAgencyId ?? null,
+        targetAgencyId: agencyId,
+      }),
+    });
+  } catch (auditErr) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[Assign] audit write failed (assignment succeeded):", auditErr);
+    }
+  }
 
   if (process.env.NODE_ENV !== "production") {
     console.info("[Assign] success:", docId);
@@ -243,10 +257,11 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ propertyId: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const { propertyId } = await params;
   if (!propertyId) {
@@ -303,7 +318,7 @@ export async function DELETE(
   const col = db.collection(propertyLandlordsCol());
   const docId = joinId(actingAgencyId, propertyId, landlordUid);
   const ref = col.doc(docId);
-  let existing = await ref.get();
+  const existing = await ref.get();
 
   if (!existing.exists && actingAgencyId) {
     const legacy = await col
@@ -324,7 +339,7 @@ export async function DELETE(
         propertyId,
         agencyId: actingAgencyId,
         ...(session.role === "superAdmin" && {
-          landlordPrimaryAgencyId: landlordPrimaryAgencyId ?? undefined,
+          landlordPrimaryAgencyId: landlordPrimaryAgencyId ?? null,
           targetAgencyId: actingAgencyId,
         }),
       });
@@ -352,7 +367,7 @@ export async function DELETE(
     propertyId,
     agencyId: actingAgencyId,
     ...(session.role === "superAdmin" && {
-      landlordPrimaryAgencyId: landlordPrimaryAgencyId ?? undefined,
+      landlordPrimaryAgencyId: landlordPrimaryAgencyId ?? null,
       targetAgencyId: actingAgencyId,
     }),
   });

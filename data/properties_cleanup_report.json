@@ -1,0 +1,363 @@
+{
+  "total_property_count": 647,
+  "total_listing_count": 647,
+  "dates_normalized_count": 574,
+  "invalid_dates_set_to_null_count": 0,
+  "statuses_mapped_summary": {
+    "let": 503,
+    "available": 68,
+    "let_agreed": 68,
+    "under_valuation": 8
+  },
+  "prices_set_to_null_count": 12,
+  "property_types_normalized_summary": {
+    "house": 429,
+    "flat": 148,
+    "bungalow": 53,
+    "maisonette": 5,
+    "studio": 6,
+    "land": 1,
+    "room": 5
+  },
+  "records_with_needs_review_true": 643,
+  "review_flag_counts": {
+    "missing_available_date": 552,
+    "missing_headline": 634,
+    "missing_description": 97,
+    "missing_price": 12
+  },
+  "integrity_checks": {
+    "duplicate_property_ids_introduced": 0,
+    "listings_with_missing_property_link": 0,
+    "json_serializable": true
+  },
+  "high_risk_sample_rows": [
+    {
+      "property_id": "265",
+      "status": "let",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "302",
+      "status": "let",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "402",
+      "status": "let",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "533",
+      "status": "let",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "588",
+      "status": "available",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "713",
+      "status": "under_valuation",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "794",
+      "status": "available",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "830",
+      "status": "under_valuation",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "878",
+      "status": "available",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "1083",
+      "status": "under_valuation",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "1153",
+      "status": "let",
+      "price": null,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline",
+        "missing_price"
+      ]
+    },
+    {
+      "property_id": "16",
+      "status": "let",
+      "price": 1500,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "56",
+      "status": "let",
+      "price": 610,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "211",
+      "status": "let",
+      "price": 498.33,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "212",
+      "status": "let",
+      "price": 498.33,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "213",
+      "status": "let",
+      "price": 511.81,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "225",
+      "status": "let",
+      "price": 1250,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "242",
+      "status": "let",
+      "price": 550,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "274",
+      "status": "let",
+      "price": 900,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "321",
+      "status": "let",
+      "price": 625,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "345",
+      "status": "let",
+      "price": 850,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "361",
+      "status": "let",
+      "price": 625,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "367",
+      "status": "let",
+      "price": 451.08,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "373",
+      "status": "let",
+      "price": 451.08,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    },
+    {
+      "property_id": "376",
+      "status": "let",
+      "price": 451.08,
+      "created_at": null,
+      "available_date": null,
+      "review_flags": [
+        "missing_available_date",
+        "missing_description",
+        "missing_headline"
+      ]
+    }
+  ],
+  "summary": {
+    "what_was_fixed": [
+      "Normalized listing dates (created_at, available_date) to ISO YYYY-MM-DD where parseable",
+      "Mapped listing statuses to controlled enum values",
+      "Derived on_market from normalized status for all listings",
+      "Set invalid/missing/non-positive prices to null",
+      "Normalized property_type into controlled values and preserved original as property_type_raw",
+      "Added needs_review + review_flags for auditability without dropping records"
+    ],
+    "manual_attention_needed": [
+      "Listings flagged with missing_price",
+      "Listings flagged with missing_headline or missing_description",
+      "Listings flagged with missing_available_date or invalid dates",
+      "Any listing with missing_status or missing_property_link (if present)"
+    ]
+  }
+}

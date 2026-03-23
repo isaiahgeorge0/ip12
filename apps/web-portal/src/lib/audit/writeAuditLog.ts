@@ -9,8 +9,8 @@ import { FieldValue } from "firebase-admin/firestore";
 
 const AUDIT_COLLECTION = "auditLogs";
 
-export type AuditActorRole = "admin" | "superAdmin" | "landlord";
-export type AuditTargetType = "landlord" | "property" | "ticket" | "agency" | "assignment";
+export type AuditActorRole = "admin" | "superAdmin" | "landlord" | "public";
+export type AuditTargetType = "landlord" | "property" | "ticket" | "agency" | "assignment" | "user" | "enquiry" | "viewing" | "application_pipeline" | "offer" | "staff_action_queue" | "tenancy" | "contractor" | "job";
 
 export type AuditLogPayload = {
   action: string;
@@ -30,8 +30,21 @@ export type AuditLogPayload = {
 };
 
 function normalizeRole(role: string): AuditActorRole {
-  if (role === "admin" || role === "superAdmin" || role === "landlord") return role;
+  if (role === "admin" || role === "superAdmin" || role === "landlord" || role === "public") return role;
   return role === "superAdmin" ? "superAdmin" : "admin";
+}
+
+/** Remove undefined values so Firestore never receives them (Firestore rejects undefined). */
+function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) {
+      out[k] = v != null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date)
+        ? stripUndefined(v as Record<string, unknown>)
+        : v;
+    }
+  }
+  return out;
 }
 
 /**
@@ -82,7 +95,7 @@ export function writeAuditLog(payload: AuditLogPayload): void {
     bypass: bypass === true,
   };
   if (meta != null && typeof meta === "object" && !Array.isArray(meta)) {
-    doc.meta = meta;
+    doc.meta = stripUndefined(meta);
   }
   if (ip != null && typeof ip === "string") doc.ip = ip;
   if (userAgent != null && typeof userAgent === "string") doc.userAgent = userAgent;

@@ -10,7 +10,8 @@ export type Role =
   | "landlord"
   | "tenant"
   | "contractor"
-  | "lead";
+  | "lead"
+  | "public";
 
 export { ALL_PERMISSIONS };
 
@@ -65,4 +66,7 @@ export const DEFAULT_PERMISSIONS_BY_ROLE: Record<Role, Permission[]> = {
   contractor: ["tickets.read", "tickets.write", "properties.read"],
 
   lead: ["properties.read", "applications.write"],
+
+  /** Public self-sign-up: no agency permissions; can browse public pages and submit enquiries via API. */
+  public: [],
 };

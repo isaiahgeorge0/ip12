@@ -38,4 +38,22 @@ The model supports multiple agencies via `agencyId` on the user profile and scop
 - Top-level collections like `users` are global.
 - Agency-scoped data lives under `agencies/{agencyId}/...` (e.g. `properties`, `applications`, `tenancies`, `tickets`, `contractorJobs`).
 
-Authorization must always consider `agencyId`: staff and contractors see only data for their agency; landlords and tenants see only data for the agency and properties/tenancies they are linked to. Super-admins can operate across agencies for bootstrap and support; normal admins and agents are single-agency unless we introduce cross-agency roles later.
+Authorization must always consider `agencyId`: staff and contractors see only data for their agency; landlords and tenants see data for the agency and properties/tenancies they are linked to. Super-admins can operate across agencies for bootstrap and support; normal admins and agents are single-agency unless we introduce cross-agency roles later.
+
+### Enquiries (applicant pipeline)
+
+- **Collection:** `agencies/{agencyId}/enquiries/{enquiryId}`. Written only by the server (POST /api/enquiries); no client direct writes.
+- **Applicant profiles:** Global `applicants/{userId}` stores stable, reusable applicant data; created/updated by the server on enquiry submit. Public users can read their own document for form prefill; admins read via server APIs.
+- **Who can submit:** Any signed-in user (including **public** and **lead**). Submitter is stored as `applicantUserId`; name, email, phone, message, move-in date, pets, children, employment, smoker, occupants, and optional income notes are stored on the enquiry doc and used to upsert the applicant profile.
+- **Who can read:** Admins (and superAdmin) with `applications.read` for that agency. Enquiries are listed on the property detail page (with enriched columns) and on the Applicants page (“Applicants from enquiries”, “Recent enquiries”).
+- **Status:** New enquiries have `status: "new"` and `source: "public_listing"`. Future: viewing requests, offers, status workflow.
+
+### Public users and sign-up
+
+- **public** — Self-sign-up from the public site. No agency or privileged permissions; can browse public pages and submit enquiries via POST /api/enquiries. User doc at `users/{uid}` has `role: "public"`, `status: "active"`, `permissions: []`. Sign-up creates Firebase Auth user and Firestore user doc via POST /api/auth/register-profile (called after client createUserWithEmailAndPassword).
+- **returnTo:** Sign-in and sign-up support a safe `returnTo` query param for public paths only (`/`, `/listings`, `/listings/[id]`); never `/admin`, `/landlord`, `/superadmin`, or external URLs.
+
+### Admin properties tab vs landlord-scoped property access
+
+- **Admin properties tab** (`/admin/properties`, `GET /api/admin/properties`): Intentionally **agency-scoped only**. An admin sees only properties belonging to their `session.agencyId`. A secondary-agency admin (one with a landlord grant allowing them to view another agency’s landlord) does **not** see that other agency’s properties in the main properties list.
+- **Landlord context**: When an admin views a specific landlord (e.g. landlord detail or inventory), they can see and navigate to properties linked to that landlord even if those properties belong to another agency, as long as the grant allows it (`getAllowedAgencyIdsForLandlord`). So cross-agency property access is **only** in the context of “viewing this landlord,” not in the global properties tab.

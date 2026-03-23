@@ -23,6 +23,8 @@ export interface UserProfile {
   updatedAt: FirestoreTimestamp;
   /** Optional; used e.g. in landlord portal. */
   displayName?: string;
+  /** Optional; used e.g. for enquiry prefill and public profile. */
+  phone?: string;
   /** Set when inviting a landlord; set status to "active" on first login. */
   invitedAt?: FirestoreTimestamp;
   invitedByUid?: string;

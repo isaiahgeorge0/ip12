@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireServerSession, assertRole } from "@/lib/auth/authz";
+import { requireServerSession } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { propertyLandlordsCol, propertiesCol } from "@/lib/firestore/paths";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/Card";
+import { HistoryBackLink } from "@/components/HistoryBackLink";
 
 type Props = {
   params: Promise<{ propertyId: string }>;
@@ -29,12 +30,12 @@ function AccessDeniedContent() {
         <p className="mt-2 text-sm text-zinc-500">
           It may not be assigned to your account. Contact your agency if you believe this is an error.
         </p>
-        <Link
+        <HistoryBackLink
           href="/landlord"
           className="mt-4 inline-block rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
         >
           Back to dashboard
-        </Link>
+        </HistoryBackLink>
       </Card>
     </>
   );
@@ -57,7 +58,6 @@ export default async function LandlordPropertyDetailPage({ params, searchParams 
   }
 
   const session = await requireServerSession("/landlord/sign-in");
-  assertRole(session, ["landlord", "superAdmin"], "/admin");
 
   const isLandlord = session.role === "landlord";
   const isSuperAdmin = session.role === "superAdmin";
@@ -121,12 +121,12 @@ export default async function LandlordPropertyDetailPage({ params, searchParams 
       <PageHeader
         title={title}
         action={
-          <Link
-            href="/landlord"
+          <HistoryBackLink
+            href="/landlord/properties"
             className="text-sm text-zinc-600 hover:underline"
           >
             ← Back to properties
-          </Link>
+          </HistoryBackLink>
         }
       />
       <Card className="p-6">

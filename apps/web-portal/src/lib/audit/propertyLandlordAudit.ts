@@ -48,7 +48,9 @@ export function writePropertyLandlordAudit(
       propertyId: payload.propertyId,
       landlordUid: payload.landlordUid,
       actingAgencyId: payload.agencyId,
-      landlordPrimaryAgencyId: payload.landlordPrimaryAgencyId ?? undefined,
+      ...(payload.landlordPrimaryAgencyId != null && payload.landlordPrimaryAgencyId !== ""
+        ? { landlordPrimaryAgencyId: payload.landlordPrimaryAgencyId }
+        : {}),
     },
     bypass,
   });

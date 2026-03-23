@@ -1,16 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/serverSession";
-import type { Role } from "@/lib/types/roles";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { propertyLandlordsCol, userDoc } from "@/lib/firestore/paths";
 import { writePropertyLandlordAudit } from "@/lib/audit/propertyLandlordAudit";
 import { writeAuditLog } from "@/lib/audit/writeAuditLog";
-
-const ADMIN_ROLES = ["admin", "superAdmin"] as const;
-
-function isAdmin(role: Role): role is (typeof ADMIN_ROLES)[number] {
-  return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
-}
 
 function getLandlordPrimaryAgencyId(d: Record<string, unknown> | undefined): string | null {
   if (!d) return null;
@@ -34,10 +27,11 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ joinId: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const { joinId } = await params;
   if (!joinId) {

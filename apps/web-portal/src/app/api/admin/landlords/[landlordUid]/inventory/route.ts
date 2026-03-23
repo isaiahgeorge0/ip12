@@ -1,14 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { propertyLandlordsCol, propertiesCol, userDoc } from "@/lib/firestore/paths";
 import { getAllowedAgencyIdsForLandlord } from "@/lib/landlordGrants";
-
-const ADMIN_ROLES = ["admin", "superAdmin"] as const;
-
-function isAdmin(role: string): boolean {
-  return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
-}
 
 /**
  * GET /api/admin/landlords/[landlordUid]/inventory
@@ -20,13 +14,14 @@ function isAdmin(role: string): boolean {
  * No orderBy on the query; sort is in memory.
  */
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ landlordUid: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const { landlordUid } = await params;
   if (!landlordUid) {
@@ -35,10 +30,26 @@ export async function GET(
 
   const db = getAdminFirestore();
   const allowedAgencyIds = await getAllowedAgencyIdsForLandlord(db, session, landlordUid);
+  const { searchParams } = new URL(request.url);
+  const queryAgencyId = searchParams.get("agencyId")?.trim() ?? "";
 
   const col = db.collection(propertyLandlordsCol());
   let snap;
-  if (session.role === "superAdmin" || allowedAgencyIds === null) {
+  if (queryAgencyId) {
+    if (session.role === "superAdmin" || allowedAgencyIds === null) {
+      snap = await col
+        .where("landlordUid", "==", landlordUid)
+        .where("agencyId", "==", queryAgencyId)
+        .get();
+    } else if (allowedAgencyIds.includes(queryAgencyId)) {
+      snap = await col
+        .where("landlordUid", "==", landlordUid)
+        .where("agencyId", "==", queryAgencyId)
+        .get();
+    } else {
+      return NextResponse.json([]);
+    }
+  } else if (session.role === "superAdmin" || allowedAgencyIds === null) {
     snap = await col.where("landlordUid", "==", landlordUid).get();
   } else if (allowedAgencyIds.length === 0) {
     return NextResponse.json([]);
@@ -61,7 +72,11 @@ export async function GET(
     propertyId: string;
     displayAddress: string;
     postcode: string;
+    type: string;
+    bedrooms: number | null;
+    bathrooms: number | null;
     status: string;
+    propertyMissing: boolean;
   }[] = [];
 
   await Promise.all(
@@ -74,15 +89,44 @@ export async function GET(
             `[landlord inventory] missing property: agencyId=${agencyId} propertyId=${propertyId}`
           );
         }
+        list.push({
+          agencyId,
+          propertyId,
+          displayAddress: "Property record missing",
+          postcode: "",
+          type: "",
+          bedrooms: null,
+          bathrooms: null,
+          status: "—",
+          propertyMissing: true,
+        });
         return;
       }
       const p = propSnap.data()!;
+      const displayAddress =
+        typeof p.displayAddress === "string" && p.displayAddress.trim()
+          ? p.displayAddress.trim()
+          : typeof p.display_address === "string" && p.display_address.trim()
+            ? p.display_address.trim()
+            : typeof p.address_line_1 === "string" && p.address_line_1.trim()
+              ? p.address_line_1.trim()
+              : propertyId;
+      const type =
+        typeof p.type === "string" && p.type.trim()
+          ? p.type.trim()
+          : typeof p.property_type === "string" && p.property_type.trim()
+            ? p.property_type.trim()
+            : "—";
       list.push({
         agencyId,
         propertyId,
-        displayAddress: typeof p.displayAddress === "string" ? p.displayAddress : "",
+        displayAddress,
         postcode: typeof p.postcode === "string" ? p.postcode : "",
+        type,
+        bedrooms: typeof p.bedrooms === "number" && Number.isFinite(p.bedrooms) ? p.bedrooms : null,
+        bathrooms: typeof p.bathrooms === "number" && Number.isFinite(p.bathrooms) ? p.bathrooms : null,
         status: typeof p.status === "string" ? p.status : "—",
+        propertyMissing: false,
       });
     })
   );

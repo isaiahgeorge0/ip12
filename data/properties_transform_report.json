@@ -1,0 +1,96 @@
+{
+  "row_count_input": 647,
+  "rows_skipped_missing_address": 0,
+  "output_properties": 647,
+  "output_listings": 647,
+  "status_variations": {
+    "Let": 503,
+    "Available": 68,
+    "Let Agreed": 68,
+    "Under Valuation": 8
+  },
+  "price_qualifier_variations": {
+    "Monthly": 635,
+    "Annual": 1
+  },
+  "missing_critical_samples": [
+    {
+      "row": 169,
+      "id": "265",
+      "issues": [
+        "missing/invalid price"
+      ]
+    },
+    {
+      "row": 197,
+      "id": "302",
+      "issues": [
+        "missing/invalid price"
+      ]
+    },
+    {
+      "row": 377,
+      "id": "533",
+      "issues": [
+        "missing/invalid price"
+      ]
+    },
+    {
+      "row": 394,
+      "id": "588",
+      "issues": [
+        "missing/invalid price"
+      ]
+    },
+    {
+      "row": 438,
+      "id": "713",
+      "issues": [
+        "missing/invalid price"
+      ]
+    },
+    {
+      "row": 462,
+      "id": "794",
+      "issues": [
+        "missing/invalid price"
+      ]
+    },
+    {
+      "row": 480,
+      "id": "830",
+      "issues": [
+        "missing/invalid price"
+      ]
+    },
+    {
+      "row": 502,
+      "id": "878",
+      "issues": [
+        "missing/invalid price"
+      ]
+    },
+    {
+      "row": 541,
+      "id": "969",
+      "issues": [
+        "missing/invalid price"
+      ]
+    },
+    {
+      "row": 594,
+      "id": "1083",
+      "issues": [
+        "missing/invalid price"
+      ]
+    },
+    {
+      "row": 635,
+      "id": "1153",
+      "issues": [
+        "missing/invalid price"
+      ]
+    }
+  ],
+  "missing_critical_count": 11
+}

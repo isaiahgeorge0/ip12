@@ -2,17 +2,18 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import {
-  addDoc,
-  collection,
-  orderBy,
-  query,
-  serverTimestamp,
-  onSnapshot,
-} from "firebase/firestore";
-import { PageHeader } from "@/components/PageHeader";
+import { useSearchParams } from "next/navigation";
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
+import { Button } from "@/components/ui/Button";
+import { FormField } from "@/components/ui/FormField";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
+import { InlineAlert } from "@/components/ui/InlineAlert";
+import { formatAdminDate } from "@/lib/admin/formatAdminDate";
+import { useAdminAgency } from "@/lib/admin/useAdminAgency";
 import { useAuth } from "@/contexts/AuthContext";
 import { getFirebaseFirestore } from "@/lib/firebase/client";
 import { propertiesCol } from "@/lib/firestore/paths";
@@ -22,6 +23,7 @@ type PropertyStatus = "Available" | "Let" | "Sold" | "Off-market";
 
 type Property = {
   id: string;
+  agencyId: string;
   displayAddress: string;
   postcode: string;
   type: PropertyType;
@@ -36,13 +38,24 @@ type Property = {
 };
 
 function formatPropertyDate(v: unknown): string {
-  if (v == null) return "—";
-  const t = v as { seconds?: number; toDate?: () => Date };
-  if (typeof t.toDate === "function") return t.toDate().toLocaleDateString();
-  if (typeof t.seconds === "number") {
-    return new Date(t.seconds * 1000).toLocaleDateString();
-  }
-  return String(v);
+  return formatAdminDate(v as unknown as number | string | { seconds?: number; toDate?: () => Date } | null | undefined, "date");
+}
+
+/** Safe display title: never render [object Object]; use fallback for empty. */
+function displayTitle(prop: Property): string {
+  const v = prop.displayAddress;
+  if (v == null) return "Untitled property";
+  if (typeof v !== "string") return "Untitled property";
+  const s = v.trim();
+  return s || "Untitled property";
+}
+
+/** Safe price display: never render [object Object]; only number or —. */
+function formatRentPcm(prop: Property): string {
+  const v = prop.rentPcm;
+  if (v == null || typeof v !== "number" || !Number.isFinite(v) || v < 0)
+    return "—";
+  return `£${v}/mo`;
 }
 
 function StatusChip({ status }: { status: string }) {
@@ -80,16 +93,19 @@ const defaultCreateForm = {
 };
 
 export default function AdminPropertiesPage() {
-  const { profile, user } = useAuth();
+  const { user } = useAuth();
+  const searchParams = useSearchParams();
   const [properties, setProperties] = useState<Property[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [createForm, setCreateForm] = useState(defaultCreateForm);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
-  const agencyId = profile?.agencyId ?? null;
+  const { effectiveAgencyId, isSuperAdmin } = useAdminAgency();
   const db = getFirebaseFirestore();
+  const pageSubtitle = "Manage properties and availability for this agency.";
 
   useEffect(() => {
     if (toast) {
@@ -99,48 +115,31 @@ export default function AdminPropertiesPage() {
   }, [toast]);
 
   useEffect(() => {
-    if (!db || !agencyId) {
-      setLoading(false);
+    if (!effectiveAgencyId) {
       setProperties([]);
+      setLoading(false);
       return;
     }
-    const colRef = collection(db, propertiesCol(agencyId));
-    const q = query(colRef, orderBy("updatedAt", "desc"));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const list: Property[] = snap.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: d.id,
-            displayAddress: data.displayAddress ?? "",
-            postcode: data.postcode ?? "",
-            type: (data.type as PropertyType) ?? "House",
-            bedrooms: Number(data.bedrooms) ?? 0,
-            bathrooms: Number(data.bathrooms) ?? 0,
-            rentPcm: data.rentPcm != null ? Number(data.rentPcm) : null,
-            status: (data.status as PropertyStatus) ?? "Available",
-            archived: data.archived === true,
-            createdAt: data.createdAt,
-            updatedAt: data.updatedAt,
-            createdByUid: data.createdByUid ?? "",
-          };
-        });
-        setProperties(list.filter((p) => !p.archived));
-        setLoading(false);
-      },
-      () => {
-        setProperties([]);
-        setLoading(false);
-      }
-    );
-    return () => unsub();
-  }, [db, agencyId]);
+    setLoading(true);
+    const url = isSuperAdmin
+      ? `/api/admin/properties?agencyId=${encodeURIComponent(effectiveAgencyId)}`
+      : "/api/admin/properties";
+    fetch(url, { credentials: "include" })
+      .then((res) => {
+        if (!res.ok) return res.json().then((body: { error?: string }) => ({ _error: body?.error, list: [] }));
+        return res.json().then((list: Property[]) => ({ list: Array.isArray(list) ? list : [] }));
+      })
+      .then((result: { _error?: string; list: Property[] }) => {
+        setProperties((result.list ?? []).filter((p) => !p.archived));
+      })
+      .catch(() => setProperties([]))
+      .finally(() => setLoading(false));
+  }, [effectiveAgencyId, isSuperAdmin]);
 
   const handleCreateSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!db || !agencyId || !user) return;
+      if (!db || !effectiveAgencyId || !user) return;
       const rentPcm =
         createForm.rentPcm === "" ? null : Number(createForm.rentPcm);
       if (
@@ -149,11 +148,13 @@ export default function AdminPropertiesPage() {
         Number(createForm.bedrooms) < 0 ||
         Number(createForm.bathrooms) < 0
       ) {
+        setCreateError("Please fill in all required fields.");
         return;
       }
+      setCreateError(null);
       setSubmitting(true);
       try {
-        const colRef = collection(db, propertiesCol(agencyId));
+        const colRef = collection(db, propertiesCol(effectiveAgencyId));
         await addDoc(colRef, {
           displayAddress: createForm.displayAddress.trim(),
           postcode: createForm.postcode.trim(),
@@ -174,16 +175,28 @@ export default function AdminPropertiesPage() {
         setSubmitting(false);
       }
     },
-    [db, agencyId, user, createForm]
+    [db, effectiveAgencyId, user, createForm]
   );
 
-  if (!agencyId) {
+  if (!effectiveAgencyId && !isSuperAdmin) {
     return (
       <>
-        <PageHeader title="Properties" />
+        <AdminPageHeader title="Properties" subtitle={pageSubtitle} />
         <EmptyState
           title="No agency"
           description="Your account is not linked to an agency."
+        />
+      </>
+    );
+  }
+
+  if (isSuperAdmin && !effectiveAgencyId) {
+    return (
+      <>
+        <AdminPageHeader title="Properties" subtitle={pageSubtitle} />
+        <EmptyState
+          title="Select an agency from the header to view this page."
+          description="Use the agency dropdown in the top bar."
         />
       </>
     );
@@ -200,16 +213,18 @@ export default function AdminPropertiesPage() {
         </div>
       )}
 
-      <PageHeader
+      <AdminPageHeader
         title="Properties"
-        action={
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
-          >
-            Create property
-          </button>
+        subtitle={pageSubtitle}
+        primaryAction={
+          !isSuperAdmin ? (
+            <Button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+            >
+              Create property
+            </Button>
+          ) : null
         }
       />
 
@@ -222,13 +237,12 @@ export default function AdminPropertiesPage() {
           title="No properties yet"
           description="Create a property to get started."
           action={
-            <button
+            <Button
               type="button"
               onClick={() => setCreateOpen(true)}
-              className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
             >
               Create property
-            </button>
+            </Button>
           }
         />
       )}
@@ -236,11 +250,14 @@ export default function AdminPropertiesPage() {
       {!loading && properties.length > 0 && (
         <div className="space-y-2">
           {properties.map((prop) => (
-            <Link key={prop.id} href={`/admin/properties/${prop.id}`}>
+            <Link
+              key={`${prop.agencyId}-${prop.id}`}
+              href={`/admin/properties/${prop.id}${(prop.agencyId || effectiveAgencyId) ? `?agencyId=${encodeURIComponent((prop.agencyId || effectiveAgencyId) ?? "")}` : ""}`}
+            >
               <Card className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between hover:border-zinc-400 transition-colors">
                 <div>
                   <p className="font-medium text-zinc-900">
-                    {prop.displayAddress}
+                    {displayTitle(prop)}
                   </p>
                   <p className="text-sm text-zinc-500">
                     {prop.postcode} · {prop.type} · {prop.bedrooms} bed,{" "}
@@ -249,11 +266,9 @@ export default function AdminPropertiesPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <StatusChip status={prop.status} />
-                  {prop.rentPcm != null && (
-                    <span className="text-sm text-zinc-600">
-                      £{prop.rentPcm}/mo
-                    </span>
-                  )}
+                  <span className="text-sm text-zinc-600">
+                    {formatRentPcm(prop)}
+                  </span>
                   <span className="text-sm text-zinc-500">
                     {formatPropertyDate(prop.updatedAt)}
                   </span>
@@ -279,180 +294,153 @@ export default function AdminPropertiesPage() {
               Create property
             </h2>
             <form onSubmit={handleCreateSubmit} className="mt-4 space-y-4">
-              <div>
-                <label
-                  htmlFor="prop-displayAddress"
-                  className="block text-sm font-medium text-zinc-700"
-                >
-                  Display address *
-                </label>
-                <input
-                  id="prop-displayAddress"
-                  type="text"
-                  value={createForm.displayAddress}
-                  onChange={(e) =>
-                    setCreateForm((prev) => ({
-                      ...prev,
-                      displayAddress: e.target.value,
-                    }))
-                  }
-                  required
-                  placeholder="12 Example Street, Ipswich"
-                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="prop-postcode"
-                  className="block text-sm font-medium text-zinc-700"
-                >
-                  Postcode *
-                </label>
-                <input
-                  id="prop-postcode"
-                  type="text"
-                  value={createForm.postcode}
-                  onChange={(e) =>
-                    setCreateForm((prev) => ({ ...prev, postcode: e.target.value }))
-                  }
-                  required
-                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="prop-type"
-                  className="block text-sm font-medium text-zinc-700"
-                >
-                  Type
-                </label>
-                <select
-                  id="prop-type"
-                  value={createForm.type}
-                  onChange={(e) =>
-                    setCreateForm((prev) => ({
-                      ...prev,
-                      type: e.target.value as PropertyType,
-                    }))
-                  }
-                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
-                >
-                  {PROPERTY_TYPES.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {createError ? (
+                <InlineAlert variant="danger" title="Couldn’t create property" description={createError} />
+              ) : null}
+              <FormField label="Display address" required>
+                {({ id, describedById, hasError }) => (
+                  <Input
+                    id={id}
+                    aria-describedby={describedById}
+                    hasError={hasError}
+                    type="text"
+                    value={createForm.displayAddress}
+                    onChange={(e) =>
+                      setCreateForm((prev) => ({
+                        ...prev,
+                        displayAddress: e.target.value,
+                      }))
+                    }
+                    required
+                    placeholder="12 Example Street, Ipswich"
+                  />
+                )}
+              </FormField>
+              <FormField label="Postcode" required>
+                {({ id, describedById, hasError }) => (
+                  <Input
+                    id={id}
+                    aria-describedby={describedById}
+                    hasError={hasError}
+                    type="text"
+                    value={createForm.postcode}
+                    onChange={(e) =>
+                      setCreateForm((prev) => ({ ...prev, postcode: e.target.value }))
+                    }
+                    required
+                  />
+                )}
+              </FormField>
+              <FormField label="Type">
+                {({ id, describedById, hasError }) => (
+                  <Select
+                    id={id}
+                    aria-describedby={describedById}
+                    hasError={hasError}
+                    value={createForm.type}
+                    onChange={(e) =>
+                      setCreateForm((prev) => ({
+                        ...prev,
+                        type: e.target.value as PropertyType,
+                      }))
+                    }
+                  >
+                    {PROPERTY_TYPES.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </FormField>
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label
-                    htmlFor="prop-bedrooms"
-                    className="block text-sm font-medium text-zinc-700"
-                  >
-                    Bedrooms *
-                  </label>
-                  <input
-                    id="prop-bedrooms"
+                <FormField label="Bedrooms" required>
+                  {({ id, describedById, hasError }) => (
+                    <Input
+                      id={id}
+                      aria-describedby={describedById}
+                      hasError={hasError}
+                      type="number"
+                      min={0}
+                      value={createForm.bedrooms || ""}
+                      onChange={(e) =>
+                        setCreateForm((prev) => ({
+                          ...prev,
+                          bedrooms: e.target.value === "" ? 0 : Number(e.target.value),
+                        }))
+                      }
+                      required
+                    />
+                  )}
+                </FormField>
+                <FormField label="Bathrooms" required>
+                  {({ id, describedById, hasError }) => (
+                    <Input
+                      id={id}
+                      aria-describedby={describedById}
+                      hasError={hasError}
+                      type="number"
+                      min={0}
+                      value={createForm.bathrooms || ""}
+                      onChange={(e) =>
+                        setCreateForm((prev) => ({
+                          ...prev,
+                          bathrooms: e.target.value === "" ? 0 : Number(e.target.value),
+                        }))
+                      }
+                      required
+                    />
+                  )}
+                </FormField>
+              </div>
+              <FormField label="Rent pcm (optional)">
+                {({ id, describedById, hasError }) => (
+                  <Input
+                    id={id}
+                    aria-describedby={describedById}
+                    hasError={hasError}
                     type="number"
                     min={0}
-                    value={createForm.bedrooms || ""}
+                    step={1}
+                    value={createForm.rentPcm === "" ? "" : createForm.rentPcm}
                     onChange={(e) =>
                       setCreateForm((prev) => ({
                         ...prev,
-                        bedrooms: e.target.value === "" ? 0 : Number(e.target.value),
+                        rentPcm: e.target.value === "" ? "" : Number(e.target.value),
                       }))
                     }
-                    required
-                    className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
                   />
-                </div>
-                <div>
-                  <label
-                    htmlFor="prop-bathrooms"
-                    className="block text-sm font-medium text-zinc-700"
-                  >
-                    Bathrooms *
-                  </label>
-                  <input
-                    id="prop-bathrooms"
-                    type="number"
-                    min={0}
-                    value={createForm.bathrooms || ""}
+                )}
+              </FormField>
+              <FormField label="Status">
+                {({ id, describedById, hasError }) => (
+                  <Select
+                    id={id}
+                    aria-describedby={describedById}
+                    hasError={hasError}
+                    value={createForm.status}
                     onChange={(e) =>
                       setCreateForm((prev) => ({
                         ...prev,
-                        bathrooms: e.target.value === "" ? 0 : Number(e.target.value),
+                        status: e.target.value as PropertyStatus,
                       }))
                     }
-                    required
-                    className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
-                  />
-                </div>
-              </div>
-              <div>
-                <label
-                  htmlFor="prop-rentPcm"
-                  className="block text-sm font-medium text-zinc-700"
-                >
-                  Rent pcm (optional)
-                </label>
-                <input
-                  id="prop-rentPcm"
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={createForm.rentPcm === "" ? "" : createForm.rentPcm}
-                  onChange={(e) =>
-                    setCreateForm((prev) => ({
-                      ...prev,
-                      rentPcm:
-                        e.target.value === "" ? "" : Number(e.target.value),
-                    }))
-                  }
-                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="prop-status"
-                  className="block text-sm font-medium text-zinc-700"
-                >
-                  Status
-                </label>
-                <select
-                  id="prop-status"
-                  value={createForm.status}
-                  onChange={(e) =>
-                    setCreateForm((prev) => ({
-                      ...prev,
-                      status: e.target.value as PropertyStatus,
-                    }))
-                  }
-                  className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-zinc-900"
-                >
-                  {PROPERTY_STATUSES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                  >
+                    {PROPERTY_STATUSES.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </FormField>
               <div className="flex gap-2 justify-end">
-                <button
-                  type="button"
-                  onClick={() => setCreateOpen(false)}
-                  className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-                >
+                <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>
                   Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
-                >
+                </Button>
+                <Button type="submit" isLoading={submitting}>
                   {submitting ? "Creating…" : "Create"}
-                </button>
+                </Button>
               </div>
             </form>
           </Card>

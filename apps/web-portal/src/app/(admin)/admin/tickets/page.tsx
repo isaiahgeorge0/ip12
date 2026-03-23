@@ -1,11 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { PageHeader } from "@/components/PageHeader";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
+import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/contexts/AuthContext";
 import { AdminCreateTicketModal } from "@/components/admin/AdminCreateTicketModal";
+import { formatAdminDate } from "@/lib/admin/formatAdminDate";
 
 type TicketStatus = "Open" | "In progress" | "Resolved";
 
@@ -23,13 +27,10 @@ type Ticket = {
 };
 
 function formatTicketDate(v: unknown): string {
-  if (v == null) return "—";
-  const t = v as { seconds?: number; toDate?: () => Date };
-  if (typeof t.toDate === "function") return t.toDate().toLocaleDateString();
-  if (typeof t.seconds === "number") {
-    return new Date(t.seconds * 1000).toLocaleDateString();
-  }
-  return String(v);
+  return formatAdminDate(
+    v as unknown as number | string | { seconds?: number; toDate?: () => Date } | null | undefined,
+    "date"
+  );
 }
 
 type TicketNote = {
@@ -75,7 +76,12 @@ export default function AdminTicketsPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
 
-  const agencyId = profile?.agencyId ?? null;
+  const searchParams = useSearchParams();
+  const agencyIdParam = searchParams?.get("agencyId")?.trim() ?? null;
+  const sessionAgencyId = profile?.agencyId ?? null;
+  const isSuperAdmin = profile?.role === "superAdmin";
+  const agencyId = isSuperAdmin ? agencyIdParam : sessionAgencyId;
+  const pageSubtitle = "Track and resolve maintenance tickets.";
 
   const loadTickets = useCallback(() => {
     if (!agencyId) {
@@ -83,7 +89,8 @@ export default function AdminTicketsPage() {
       setTickets([]);
       return;
     }
-    fetch("/api/admin/tickets", { credentials: "include" })
+    const q = `?agencyId=${encodeURIComponent(agencyId)}`;
+    fetch(`/api/admin/tickets${q}`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : []))
       .then((data: Ticket[]) => setTickets(Array.isArray(data) ? data : []))
       .catch(() => setTickets([]))
@@ -208,27 +215,39 @@ export default function AdminTicketsPage() {
     [detailTicket, detailStatus, agencyId, loadTickets]
   );
 
-  if (!agencyId) {
+  if (!agencyId && !isSuperAdmin) {
     return (
       <>
-        <PageHeader title="Tickets" />
+        <AdminPageHeader title="Tickets" subtitle={pageSubtitle} />
         <EmptyState title="No agency" description="Your account is not linked to an agency." />
+      </>
+    );
+  }
+
+  if (isSuperAdmin && !agencyId) {
+    return (
+      <>
+        <AdminPageHeader title="Tickets" subtitle={pageSubtitle} />
+        <EmptyState
+          title="Select an agency from the header to view this page."
+          description="Use the agency dropdown in the top bar."
+        />
       </>
     );
   }
 
   return (
     <>
-      <PageHeader
+      <AdminPageHeader
         title="Tickets"
-        action={
-          <button
+        subtitle={pageSubtitle}
+        primaryAction={
+          <Button
             type="button"
             onClick={() => setCreateOpen(true)}
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
           >
             Create ticket
-          </button>
+          </Button>
         }
       />
 
@@ -246,27 +265,35 @@ export default function AdminTicketsPage() {
       {!loading && tickets.length > 0 && (
         <div className="space-y-2">
           {tickets.map((ticket) => (
-            <button
+            <Card
               key={ticket.id}
-              type="button"
-              onClick={() => openDetail(ticket)}
-              className="w-full text-left"
+              className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between hover:border-zinc-400 transition-colors"
             >
-              <Card className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between hover:border-zinc-400 transition-colors">
+              <button
+                type="button"
+                onClick={() => openDetail(ticket)}
+                className="flex-1 text-left min-w-0"
+              >
                 <div>
                   <p className="font-medium text-zinc-900">{ticket.title}</p>
                   <p className="text-sm text-zinc-500">
                     {ticket.category || "General"} · Property: {ticket.propertyId}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 mt-1 sm:mt-0 sm:ml-4">
                   <StatusChip status={ticket.status} />
                   <span className="text-sm text-zinc-500">
                     {formatTicketDate(ticket.updatedAt)}
                   </span>
                 </div>
-              </Card>
-            </button>
+              </button>
+              <Link
+                href={`/admin/tickets/${ticket.id}${agencyId ? `?agencyId=${encodeURIComponent(agencyId)}` : ""}`}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 bg-zinc-50 hover:bg-zinc-100 shrink-0"
+              >
+                Open ticket
+              </Link>
+            </Card>
           ))}
         </div>
       )}

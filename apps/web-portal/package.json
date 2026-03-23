@@ -6,18 +6,24 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "backfill:property-index": "tsx scripts/backfillPropertyIndex.ts",
+    "seed:properties": "tsx scripts/seedProperties.ts"
   },
   "dependencies": {
+    "leaflet": "^1.9.4",
     "firebase": "^11.0.1",
     "firebase-admin": "^13.6.1",
+    "geofire-common": "^6.0.0",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "tsx": "^4.19.0",
     "@types/node": "^20",
+    "@types/leaflet": "^1.9",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
@@ -26,3 +32,4 @@
     "typescript": "^5"
   }
 }
+ 

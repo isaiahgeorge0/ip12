@@ -5,14 +5,19 @@
 import * as admin from "firebase-admin";
 import {setGlobalOptions} from "firebase-functions/v2";
 import {onRequest} from "firebase-functions/v2/https";
+import {onDocumentWritten} from "firebase-functions/v2/firestore";
 import * as logger from "firebase-functions/logger";
+import {geohashForLocation} from "geofire-common";
 
 if (!admin.apps.length) {
   admin.initializeApp();
 }
 
-setGlobalOptions({maxInstances: 10});
+// Pin region so Gen2 Eventarc triggers and functions colocate (avoids
+// permission/location mismatch) and keeps latency low for UK/EU.
+setGlobalOptions({maxInstances: 10, region: "europe-west2"});
 
+const PROPERTY_INDEX_COLLECTION = "propertyIndex";
 const BOOTSTRAP_PATH = "system/bootstrap";
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:3000",
@@ -70,6 +75,143 @@ function sendJson(
     .contentType("application/json")
     .send(JSON.stringify(body));
 }
+
+// --- propertyIndex sync helpers (mirror web-portal field building)
+
+/**
+ * Coerces value to string; empty string for null/undefined.
+ * @param {unknown} v - Value to coerce
+ * @return {string} Non-null string
+ */
+function safeStr(v: unknown): string {
+  if (v == null) return "";
+  return typeof v === "string" ? v : String(v);
+}
+
+/**
+ * Parses a finite number from value; undefined otherwise.
+ * @param {unknown} v - Value to parse
+ * @return {number | undefined} Finite number or undefined
+ */
+function safeNum(v: unknown): number | undefined {
+  if (v == null) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * Returns true if lat/lng are within valid geohash ranges.
+ * @param {number} lat - Latitude
+ * @param {number} lng - Longitude
+ * @return {boolean} True if lat in [-90,90] and lng in [-180,180]
+ */
+function isValidLatLng(lat: number, lng: number): boolean {
+  return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+
+/**
+ * Property index sync (Firestore trigger).
+ *
+ * Canonical write path: agencies/{agencyId}/properties/{propertyId}
+ * (source of truth). Index write path: propertyIndex/{agencyId}__{propertyId}
+ * (search/map layer).
+ *
+ * We keep index docs for archived/disabled properties and set available=false
+ * instead of deleting so that search and analytics can still filter by status
+ * and so re-enabling does not require a backfill.
+ */
+export const syncPropertyIndex = onDocumentWritten(
+  "agencies/{agencyId}/properties/{propertyId}",
+  async (event): Promise<void> => {
+    const agencyId = event.params.agencyId;
+    const propertyId = event.params.propertyId;
+    const indexDocId = `${agencyId}__${propertyId}`;
+    const db = admin.firestore();
+    const indexRef = db.collection(PROPERTY_INDEX_COLLECTION).doc(indexDocId);
+
+    const before = event.data?.before;
+    const after = event.data?.after;
+
+    const op = !after?.exists ?
+      "delete" :
+      !before?.exists ?
+        "create" :
+        "update";
+
+    logger.info("syncPropertyIndex", {agencyId, propertyId, op});
+
+    if (op === "delete") {
+      await indexRef.delete();
+      return;
+    }
+
+    const afterSnap = after;
+    if (!afterSnap || !afterSnap.exists) {
+      await indexRef.delete();
+      return;
+    }
+    const d = afterSnap.data() as Record<string, unknown> | undefined;
+    if (!d) {
+      await indexRef.delete();
+      return;
+    }
+
+    const displayAddress = safeStr(
+      d.displayAddress ?? d.title ?? d.address
+    ).trim();
+    const postcode = safeStr(d.postcode).trim();
+    const addressLower = displayAddress ? displayAddress.toLowerCase() : "";
+    const postcodeLower = postcode ? postcode.toLowerCase() : "";
+    const status = safeStr(d.status).trim() || undefined;
+    const archived = d.archived === true;
+    const statusDisabled = status === "disabled";
+    const available = !archived && !statusDisabled;
+
+    const rentPcm = safeNum(d.rentPcm ?? d.rent);
+    const price = safeNum(d.price);
+    const beds = safeNum(d.bedrooms ?? d.beds);
+    const baths = safeNum(d.bathrooms ?? d.baths);
+    const propertyType = safeStr(d.type ?? d.propertyType).trim() || undefined;
+    let listingType: "sale" | "rent" | undefined;
+    if (d.listingType === "sale" || d.listingType === "rent") {
+      listingType = d.listingType;
+    } else if (price != null && price > 0) {
+      listingType = "sale";
+    } else if (rentPcm != null && rentPcm > 0) {
+      listingType = "rent";
+    }
+
+    const lat = safeNum(d.lat ?? d.latitude);
+    const lng = safeNum(d.lng ?? d.longitude ?? d.lon);
+
+    const indexData: Record<string, unknown> = {
+      agencyId,
+      propertyId,
+      available,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    if (safeStr(d.title).trim()) indexData.title = safeStr(d.title).trim();
+    if (displayAddress) indexData.displayAddress = displayAddress;
+    if (postcode) indexData.postcode = postcode;
+    if (addressLower) indexData.addressLower = addressLower;
+    if (postcodeLower) indexData.postcodeLower = postcodeLower;
+    if (lat != null) indexData.lat = lat;
+    if (lng != null) indexData.lng = lng;
+    if (lat != null && lng != null && isValidLatLng(lat, lng)) {
+      indexData.geohash = geohashForLocation([lat, lng]);
+    }
+    if (listingType) indexData.listingType = listingType;
+    if (status) indexData.status = status;
+    if (price != null) indexData.price = price;
+    if (rentPcm != null) indexData.rent = rentPcm;
+    if (beds != null) indexData.beds = beds;
+    if (baths != null) indexData.baths = baths;
+    if (propertyType) indexData.propertyType = propertyType;
+    if (d.createdAt != null) indexData.createdAt = d.createdAt;
+
+    await indexRef.set(indexData, {merge: true});
+  }
+);
 
 /**
  * Run once to create the first superAdmin; afterwards locked forever.

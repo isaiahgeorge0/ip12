@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { propertiesCol } from "@/lib/firestore/paths";
 import { canAdminViewLandlord, isPropertyInLandlordInventory } from "@/lib/landlordGrants";
 import { serializeTimestamp } from "@/lib/serialization";
-
-const ADMIN_ROLES = ["admin", "superAdmin"] as const;
-
-function isAdmin(role: string): boolean {
-  return ADMIN_ROLES.includes(role as (typeof ADMIN_ROLES)[number]);
-}
+import {
+  normalizedDisplayAddress,
+  safeRentPcm,
+} from "@/lib/admin/normalizePropertyDisplay";
 
 /**
  * GET /api/admin/properties/[propertyId]?agencyId=...&landlordUid=...
@@ -21,10 +19,11 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ propertyId: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["admin", "superAdmin"]);
+  if (role403) return role403;
 
   const { propertyId } = await params;
   if (!propertyId) {
@@ -59,21 +58,22 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden: no access to this property" }, { status: 403 });
   }
 
+  // Canonical path: agencies/{agencyId}/properties/{propertyId}; propertyId = Firestore doc id.
   const ref = db.doc(`${propertiesCol(agencyId)}/${propertyId}`);
   const snap = await ref.get();
   if (!snap.exists) {
     return NextResponse.json({ error: "Property not found" }, { status: 404 });
   }
 
-  const d = snap.data()!;
+  const d = snap.data() as Record<string, unknown>;
   return NextResponse.json({
     id: snap.id,
-    displayAddress: typeof d.displayAddress === "string" ? d.displayAddress : "",
+    displayAddress: normalizedDisplayAddress(d, snap.id),
     postcode: typeof d.postcode === "string" ? d.postcode : "",
     type: typeof d.type === "string" ? d.type : "House",
     bedrooms: Number(d.bedrooms) ?? 0,
     bathrooms: Number(d.bathrooms) ?? 0,
-    rentPcm: d.rentPcm != null ? Number(d.rentPcm) : null,
+    rentPcm: safeRentPcm(d.rentPcm),
     status: typeof d.status === "string" ? d.status : "Available",
     archived: d.archived === true,
     createdAtMs: serializeTimestamp(d.createdAt),

@@ -1,17 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
-import { getServerSession } from "@/lib/auth/serverSession";
+import { requireServerSessionApi, assertRoleApi } from "@/lib/auth/authz";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import { ticketsCol, ticketNotesCol, userDoc } from "@/lib/firestore/paths";
 import { writeTicketAudit } from "@/lib/audit/ticketAudit";
 
-const LANDLORD_ROLES = ["landlord", "superAdmin"] as const;
 const TEXT_MIN = 1;
 const TEXT_MAX = 2000;
-
-function isLandlord(role: string): boolean {
-  return LANDLORD_ROLES.includes(role as (typeof LANDLORD_ROLES)[number]);
-}
 
 /** Find ticket doc for this landlord (ticketId in one of landlord's agencies, landlordUid match). Returns ticket meta or null. */
 async function findTicketForLandlord(
@@ -57,13 +52,11 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ ticketId: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (!isLandlord(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["landlord", "superAdmin"]);
+  if (role403) return role403;
 
   const { ticketId } = await params;
   if (!ticketId) {
@@ -105,13 +98,11 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ ticketId: string }> }
 ) {
-  const session = await getServerSession();
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (!isLandlord(session.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const sessionOr401 = await requireServerSessionApi();
+  if (sessionOr401 instanceof NextResponse) return sessionOr401;
+  const session = sessionOr401;
+  const role403 = assertRoleApi(session, ["landlord", "superAdmin"]);
+  if (role403) return role403;
 
   const { ticketId } = await params;
   if (!ticketId) {
